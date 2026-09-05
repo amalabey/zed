@@ -46,6 +46,38 @@ mechanism or a different platform — GitHub — can be added without touching a
 The reviewer never leaves their branch, never checks anything out, and never opens a browser to read a
 pull request.
 
+One further constraint shapes every choice below. This repository is a **fork of Zed that continues to
+pull upstream changes**. A feature that spreads edits across existing files converts every upstream pull
+into a merge conflict, and the cost compounds forever. So the feature is built as an *addition* to the
+codebase rather than a *modification* of it: its own crate, and a deliberately enumerable set of
+strictly additive touch points in existing crates. Where the feature needs something upstream keeps
+private, adding a public accessor is preferred over copying the logic — a copy diverges silently as
+upstream evolves, which is a worse long-term cost than a one-line addition.
+
+## Clarifications
+
+### Session 2026-09-06
+
+- Q: How much of the existing Zed codebase may this feature modify? → A: Option B — a new crate, plus
+  **additive-only** public API in existing crates (new `pub fn`s, or widening visibility of existing
+  items), with no signature or behavior changes to anything upstream already calls.
+- Q: How should the limit on modifying pre-existing files be enforced? → A: Option A — a named allowlist
+  of pre-existing files the feature may modify, enforced automatically by comparing the branch against
+  the upstream merge-base and failing if any pre-existing file outside the allowlist is modified.
+- Q: Should this phase ship user settings and default keybindings, given each requires editing a
+  high-churn upstream file? → A: Option A — neither. Actions are registered and so remain discoverable in
+  the command palette and bindable by the user, but no settings schema field, no `default.json` entry and
+  no default keymap entry are added. Dock position and view state persist in Zed's own state database.
+- Q: How should the feature find the host tool's executable, given no settings field is available? →
+  A: Option A — resolve it through the project's shell environment, so the reviewer's real `PATH` applies
+  even when Zed was launched from the dock, plus an environment-variable override read inside the
+  feature's own crate. Absent means the distinct "prerequisite missing" condition of FR-064.
+- Q: Should the feature reuse the existing commit-diff machinery by widening its visibility, or build its
+  own diff item in the new crate? → A: Option B — reuse it. The existing commit-diff view and its
+  blob-backed virtual file are made reachable through additive visibility changes and additive entry
+  points, rather than duplicated. This puts the commit-diff view's file on the allowlist deliberately, in
+  exchange for not carrying a parallel copy of that machinery.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - See the repository's pull requests (Priority: P1)
@@ -305,6 +337,12 @@ confirm the reply lands on that thread on the pull request rather than as a new 
   selectable, rather than one being chosen silently.
 - **The host tool is not installed or not on the path**: reported as a missing prerequisite with what to install,
   distinct from an authentication failure and from an unreachable host.
+- **Zed was launched from the dock or a desktop launcher rather than a shell**: the host tool is still found,
+  because resolution uses the project's shell environment rather than the process's inherited `PATH`. A tool
+  the reviewer can run in their terminal is never reported as missing.
+- **The host tool is present but is a different major version than expected, or its output shape has
+  changed**: reported as an unexpected response naming the version found, rather than as a parse failure with
+  no cause.
 - **The reviewer is not logged in to the host tool, or their session expired**: reported as needing
   authentication, with the action that fixes it, and not retried in a loop.
 - **The credential is valid but grants no access to this repository**: reported as a permission problem, distinct
@@ -376,8 +414,11 @@ confirm the reply lands on that thread on the pull request rather than as a new 
 
 - **FR-001**: The feature MUST present a Pull Requests panel in the Zed workspace, dockable and dismissible like
   Zed's other panels, containing a pull request list and, below it, a detail section for the selected pull request.
-- **FR-002**: Opening and focusing the panel MUST be declared actions, discoverable in the command palette and
-  bindable in the keymap.
+- **FR-002**: Opening and focusing the panel MUST be declared actions, discoverable in the command palette
+  and bindable in the keymap. Per FR-066 no default keybinding is shipped for them; the reviewer binds one
+  if they want it.
+- **FR-002a**: The panel's dock position and size MUST be adjustable and MUST persist, stored in Zed's own
+  state database rather than in user settings.
 - **FR-003**: The panel MUST NOT be constructed, and MUST NOT contact the pull request host, until the reviewer
   first opens it.
 - **FR-004**: The feature MUST NOT introduce a concept of a persisted review session, and MUST NOT write review
@@ -420,7 +461,9 @@ confirm the reply lands on that thread on the pull request rather than as a new 
   the portion already loaded.
 - **FR-020**: When the filters match no pull request, the panel MUST say so and offer to clear them, rather than
   presenting an unexplained empty list.
-- **FR-021**: The filters, the sort, and the selected repository MUST be remembered per project across restarts.
+- **FR-021**: The filters, the sort, and the selected repository MUST be remembered per project across
+  restarts, stored in Zed's own state database alongside the state Zed already persists for panels — not
+  in user settings, and not in a configuration file the feature owns.
 
 #### Overview tab
 
@@ -528,6 +571,13 @@ they describe. Each mandates exactly one seam with exactly one implementation in
 
 - **FR-062**: The shipped implementation of the FR-056 boundary MUST obtain its data as structured, machine-readable
   output rather than by parsing output intended for humans.
+- **FR-062a**: Where the shipped implementation depends on an external executable, it MUST locate that
+  executable using the project's shell environment, so that the reviewer's own `PATH` applies even when Zed
+  was launched from a desktop environment that provides a minimal one. An environment variable read by the
+  feature MUST be able to override the resolved location for unusual installations.
+- **FR-062b**: When the executable cannot be located, the feature MUST report it as the distinct
+  "prerequisite missing" condition of FR-064, naming what is missing and how to install it. It MUST NOT
+  report a locatable-but-unauthenticated tool as missing, nor a missing tool as an authentication problem.
 - **FR-063**: The feature MUST NOT store, prompt for, or hold pull request host credentials of its own. Authentication
   MUST be whatever the shipped implementation's underlying mechanism already established. Should any future
   implementation require credentials of its own, they MUST be stored through Zed's credential provider and the OS
@@ -537,8 +587,10 @@ they describe. Each mandates exactly one seam with exactly one implementation in
   reviewer knows which one to fix.
 - **FR-065**: An unparseable or unexpected host response MUST be handled without panicking and without taking down
   the panel; the feature MUST report it and remain usable.
-- **FR-066**: User-configurable behaviour MUST be exposed through Zed's settings schema with defaults in the shipped
-  default settings, never through a configuration file the feature reads itself.
+- **FR-066**: This phase MUST ship no user settings and no default keybindings, because each would require
+  modifying a high-churn upstream file and neither is needed for the feature to work. Should a later phase
+  introduce user-configurable behaviour, it MUST be exposed through Zed's settings schema with defaults in
+  the shipped default settings, and MUST NEVER be read from a configuration file the feature owns itself.
 
 #### Responsiveness, failure and privacy
 
@@ -560,6 +612,55 @@ they describe. Each mandates exactly one seam with exactly one implementation in
   selecting a pull request or opening a diff.
 - **FR-073**: The feature MUST NOT prevent Zed from working when the pull request host is unavailable, unsupported
   for the project, or unauthenticated. Every part of Zed unrelated to this feature MUST behave identically.
+
+#### Change surface and fork maintenance
+
+This repository is a fork that continues to pull upstream Zed changes. These requirements exist so that
+doing so stays cheap for the life of the fork.
+
+- **FR-074**: All of the feature's own code MUST live in a new crate. The only modifications permitted to
+  files that already exist in the repository are: workspace and crate manifest entries needed to build
+  and depend on the new crate; the single initialization call needed to make the feature reachable; and
+  strictly additive public API as defined by FR-075. Per FR-066 this phase adds no settings schema field,
+  no default settings entry and no default keymap entry, so none of those files are modified.
+- **FR-075**: "Strictly additive" means the change adds new items, or widens the visibility of existing
+  ones, and nothing more. A permitted change MUST NOT alter the signature, behaviour or semantics of any
+  existing item; MUST NOT narrow any existing visibility; MUST NOT move an existing item between files or
+  modules; and MUST NOT reorder or reformat existing code. Anything that fails this test is not permitted
+  by FR-074.
+- **FR-076**: When the reviewer has never opened the Pull Requests panel, every existing Zed surface MUST
+  behave exactly as it did before the feature was added — including Zed's existing git surfaces, the
+  commit view and the diff surfaces the feature reuses.
+- **FR-077**: Where the feature needs a capability an existing crate keeps private, adding a public
+  accessor under FR-075 MUST be preferred over copying that crate's logic into the new crate, whenever
+  copying would diverge from upstream's behaviour or lose a capability upstream's implementation has —
+  including support for remote projects. A copy is permitted only where the logic is self-contained,
+  behaviourally equivalent, and not expected to change upstream.
+- **FR-078**: The complete set of pre-existing files the feature modifies MUST be enumerated as a named
+  allowlist recorded with the feature, so the blast radius of an upstream merge is known rather than
+  discovered during a conflict.
+- **FR-078a**: The FR-078 allowlist MUST be enforced automatically, not by convention: a check MUST
+  compare the branch against its upstream merge-base and MUST fail when any pre-existing file outside the
+  allowlist has been modified. Adding a file to the allowlist MUST therefore be a deliberate, visible
+  change rather than something that can happen unnoticed.
+- **FR-078b**: The FR-078a check MUST distinguish a file the feature added from a file that already
+  existed upstream, so that new files in the feature's own crate never trip it.
+- **FR-079**: The feature MUST NOT change the pinned Rust toolchain, MUST NOT change the version of any
+  existing workspace dependency, and MUST NOT add a third-party dependency where a capability already
+  present in the workspace suffices.
+- **FR-080**: The feature MUST render its diff by reusing Zed's existing commit-diff view and the
+  blob-backed virtual file that view is built on, rather than carrying a parallel copy of that machinery.
+  Reaching them MUST be done additively per FR-075 — widening the visibility of existing items, and adding
+  new entry points alongside the existing ones.
+- **FR-081**: Reusing the commit-diff view MUST NOT change how it behaves when Zed opens it for an ordinary
+  commit. Any parameter the feature needs that the existing view does not have — a base revision that is
+  not the commit's parent, and the reviewer's comment threads — MUST arrive through a new additive entry
+  point whose absence leaves the existing path behaving exactly as before, and MUST default to inert.
+- **FR-082**: Because FR-080 places an actively-changing upstream file on the FR-078 allowlist, the
+  feature's use of it MUST be confined to the narrowest possible surface: the fewest items widened, no
+  reliance on that file's private internals beyond what is widened, and no assumption about the order or
+  structure of code within it. A test MUST cover the reused path, so that an upstream change altering its
+  behaviour fails loudly rather than silently degrading the review surface.
 
 ### Key Entities
 
@@ -626,6 +727,22 @@ they describe. Each mandates exactly one seam with exactly one implementation in
   turn, no review state has been written to disk and no file content has been fetched from the host.
 - **SC-016**: No code path in the feature can panic on host failure, malformed host output, a missing revision, or
   cancellation — verified by exercising each.
+- **SC-017**: Every pre-existing file the feature modifies appears on the FR-078 allowlist, and the check
+  rejects a modification to any pre-existing file that does not — verified by modifying one off-list file
+  and observing the check fail.
+- **SC-018**: Every change the feature makes to a pre-existing file is strictly additive per FR-075 —
+  verified file by file against the upstream merge-base, with no signature change, no visibility
+  narrowing, no moved item and no reformatting of existing code.
+- **SC-019**: An upstream merge that touches no allowlisted file produces no merge conflict attributable
+  to this feature.
+- **SC-020**: With the feature's registration removed, the repository builds and every existing Zed
+  surface behaves identically to upstream — demonstrating the feature is an addition rather than a
+  modification.
+- **SC-021**: Opening an ordinary commit in Zed's commit-diff view behaves identically before and after
+  the feature is added — verified for an added, a modified, a deleted and a binary file, and for a
+  shallow-boundary commit — demonstrating the FR-081 reuse changed nothing for the existing path.
+- **SC-022**: The feature's diff surface and the commit-diff view share one implementation, verified by
+  the absence of a second copy of that machinery in the feature's crate.
 
 ## Assumptions
 
@@ -646,6 +763,21 @@ they describe. Each mandates exactly one seam with exactly one implementation in
 - **Panel layout**: the list occupies the panel with the selected pull request's Overview and Files tabs in a detail
   section below it, mirroring the reference plugin. Diffs open in the center pane as editors, because that is where
   Zed's split diff viewer lives and the point of FR-032 is to use it rather than reproduce it.
+- **This repository is a fork that keeps pulling upstream Zed**. That is the reason for FR-074 – FR-082:
+  the feature is an addition to the codebase, not a modification of it, and the set of pre-existing files
+  it touches is an enumerated allowlist rather than whatever turned out to be convenient.
+- **Expected allowlist**: the workspace and crate manifests, the one file carrying the feature's `init`
+  call, and the file holding the commit-diff view whose visibility FR-080 widens. No settings schema file,
+  no default settings file and no keymap file, per FR-066. The plan pins the exact list; this is the
+  expectation it should match.
+- **Reuse over duplication for the diff surface** (decided, FR-080): the commit-diff view and its
+  blob-backed virtual file are shared with Zed rather than copied. This accepts an actively-changing
+  upstream file on the allowlist in exchange for one implementation instead of two. FR-081 and FR-082
+  bound the risk: the existing path must behave identically, the widened surface must be as narrow as
+  possible, and a test must fail loudly if upstream changes the behaviour being relied on.
+- **View state, not settings** (decided, FR-066): the panel's dock position and the reviewer's filter and
+  sort choices live in Zed's own state database, where panel sizes already live. Nothing about this feature
+  is configured through user settings in this phase, so no settings file is modified.
 - **How the diff is obtained**: from the local git repository, by fetching the revisions the pull request names and
   diffing them against their divergence point. This is what lets the change appear in Zed's own split diff viewer as
   real buffers with syntax highlighting, navigation and search, rather than as a rendered patch. Fetching adds git
@@ -663,7 +795,7 @@ they describe. Each mandates exactly one seam with exactly one implementation in
 - **Out of scope for this phase**: approving, declining, merging, creating or editing pull requests; editing,
   deleting or resolving comments after posting; pull request tasks; CI and pipeline status; branch comparison, commit
   ranges and working-tree review as changeset kinds; GitHub and any host other than the one above; AI review;
-  reviewing pull requests across several repositories at once; and pull requests whose source branch lives on a fork,
-  unless that falls out for free.
+  reviewing pull requests across several repositories at once; pull requests whose source branch lives on a fork,
+  unless that falls out for free; and user settings and default keybindings, per FR-066.
 </content>
 </invoke>

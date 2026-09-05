@@ -1,18 +1,35 @@
 <!--
 SYNC IMPACT REPORT
-Version change: unversioned template → 1.0.0
-Rationale: First ratified constitution for this repository. Initial adoption is a MAJOR-line
-event under the versioning policy below, recorded as 1.0.0.
+Version change: 1.0.0 → 1.1.0
+Rationale: A new principle is added and existing guidance is materially expanded. Under the
+versioning policy below this is a MINOR amendment: nothing is removed, and no previously
+compliant work becomes non-compliant except where it conflicted with the amended crate-layout
+guidance, whose migration path is stated in the principle itself.
 
-Added principles: I. Simplicity First, II. Responsiveness, III. User Experience Discipline,
-IV. ACP Protocol Conformance, V. Signal Over Noise.
+Added principles: VI. Minimal Upstream Disruption (NON-NEGOTIABLE).
 
-Added sections: Platform & Technology Constraints, Development Workflow & Quality Gates,
-Governance.
+Modified sections:
+- Platform & Technology Constraints — the bullet preferring extension of an existing crate over
+  adding a new one is amended, because it directly contradicted Principle VI. Principle VI now
+  governs for feature work; the original preference is retained for changes that are not feature
+  work.
+- Development Workflow & Quality Gates — gate 8 (Change surface) added; gate numbering otherwise
+  unchanged.
 
 Removed sections: none.
 
 Follow-up TODOs: none outstanding.
+
+Prior report, retained for history:
+  Version change: unversioned template → 1.0.0
+  Rationale: First ratified constitution for this repository. Initial adoption is a MAJOR-line
+  event under the versioning policy below, recorded as 1.0.0.
+  Added principles: I. Simplicity First, II. Responsiveness, III. User Experience Discipline,
+  IV. ACP Protocol Conformance, V. Signal Over Noise.
+  Added sections: Platform & Technology Constraints, Development Workflow & Quality Gates,
+  Governance.
+  Removed sections: none.
+  Follow-up TODOs: none outstanding.
 -->
 
 # Reviewer for Zed Constitution
@@ -101,6 +118,37 @@ valid and expected result for a clean change.
 Rationale: For a reviewer, trust is the product. Precision is recoverable from a quiet tool and
 unrecoverable from a noisy one.
 
+### VI. Minimal Upstream Disruption (NON-NEGOTIABLE)
+
+This repository is a fork that continues to merge upstream Zed. Feature work MUST therefore be an
+*addition* to the codebase rather than a *modification* of it.
+
+- All of a feature's own code MUST live in its own crate.
+- Modifications to pre-existing files are limited to three things: manifest entries needed to build
+  and depend on that crate; the minimum registration needed to make the feature reachable; and
+  strictly additive public API.
+- **Strictly additive** means the change adds new items, or widens the visibility of existing ones,
+  and nothing more. It MUST NOT alter the signature, behaviour or semantics of anything upstream
+  already calls; MUST NOT narrow any existing visibility; MUST NOT move an existing item between
+  files or modules; and MUST NOT reorder or reformat existing code.
+- The complete set of pre-existing files a feature modifies MUST be an enumerated allowlist,
+  enforced automatically against the upstream merge-base. Convention and code review are not
+  sufficient enforcement, because drift is invisible until the merge that conflicts.
+- Where a needed capability is private upstream, widening its visibility MUST be preferred over
+  copying it, whenever copying would diverge from upstream's behaviour or lose a capability its
+  implementation has. A copy diverges silently as upstream evolves, which costs more over the life
+  of the fork than a one-line visibility change. Copying is permitted only where the logic is
+  self-contained, behaviourally equivalent, and not expected to change upstream.
+- Every existing surface MUST behave identically when the feature is not in use.
+
+Where widening visibility places an actively-changing upstream file on the allowlist, the feature's
+use of it MUST be confined to the narrowest possible surface, and a test MUST cover the reused path
+so that an upstream behavioural change fails loudly rather than silently degrading the feature.
+
+Rationale: every edit scattered through an existing file is a merge conflict on every future
+upstream pull, and that cost compounds for the life of the fork. Isolation is what keeps staying
+current with upstream affordable, which is what keeps the fork viable at all.
+
 ## Platform & Technology Constraints
 
 - Target platform: Zed, built from this Cargo workspace. All UI is GPUI; no second UI toolkit
@@ -116,8 +164,15 @@ unrecoverable from a noisy one.
   takes the user's editor down with it.
 - Agent transport: ACP only, via the `agent-client-protocol` dependency pinned to an exact
   version in the workspace `Cargo.toml`, so the pinned version has a single place to change.
+- This repository is a fork that continues to merge upstream Zed. Upstream is the source of truth for
+  every file the fork did not add, and staying current with it is a standing requirement rather than a
+  periodic project. Principle VI governs how feature work is arranged so that remains affordable.
 - New crates follow the repository conventions: an explicit `[lib] path` with a descriptive root
-  file name, no `mod.rs`. Prefer extending an existing crate over adding a small new one.
+  file name, no `mod.rs`. For changes that are not feature work, prefer extending an existing crate
+  over adding a small new one. **For feature work this preference does not apply**: Principle VI
+  requires a feature's own crate, and where the two conflict Principle VI wins. Pre-existing feature
+  code that lives inside an existing crate is not retroactively non-compliant, but MUST NOT be
+  extended further in place once Principle VI applies to it.
 - Third-party dependencies MUST be declared as workspace dependencies, MUST be kept minimal, and
   MUST NOT duplicate a capability already present in the workspace. Adding one requires a
   Principle I justification.
@@ -156,6 +211,12 @@ The following gates MUST pass before merge:
    and none of them can panic.
 7. **Build.** `./script/clippy` and `cargo fmt --check` are clean, and the tests for every
    touched crate pass.
+8. **Change surface.** The Principle VI allowlist check passes: no pre-existing file outside the
+   allowlist is modified, and every change to a file on it is strictly additive. A pull request that
+   needs a new allowlist entry states why, and why widening was preferred over copying or vice
+   versa. The check distinguishes files the fork added from files that already existed upstream, so
+   new crates never trip it. A failing check blocks the merge; it is not waived for expedience,
+   because a waived surface constraint constrains nothing thereafter.
 
 Tests are required for protocol handling, threading, and finding-selection logic. Test-first
 ordering is recommended but not mandated; test presence at merge is mandated.
@@ -191,4 +252,4 @@ compliance MUST be recorded as an explicit TODO in this file with an owner, not 
 the code. Unresolved TODO markers in this document MUST be resolved or explicitly re-deferred
 before the next MINOR amendment.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-06 | **Last Amended**: 2026-09-06
+**Version**: 1.1.0 | **Ratified**: 2026-09-06 | **Last Amended**: 2026-09-06

@@ -6,7 +6,7 @@
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [ ] No implementation details (languages, frameworks, APIs) — **deliberate, do not "fix"**
 - [x] Focused on user value and business needs
 - [x] Written for non-technical stakeholders
 - [x] All mandatory sections completed
@@ -27,12 +27,42 @@
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [ ] No implementation details leak into specification — **deliberate, do not "fix"**
 
 ## Notes
 
-Three deliberate deviations from the default "no implementation details" posture, each recorded here
-rather than silently taken:
+> The two unchecked Content Quality / Feature Readiness items above are unchecked **on purpose and
+> permanently**. They are not defects and must not be resolved by deleting FR-074 – FR-082 or the
+> Zed-surface requirements. The spec deliberately prescribes structure because the user's stated
+> constraint — a fork that keeps pulling upstream — is a constraint on the delivered implementation, not
+> on user-visible behaviour. Read the two subsections below before changing anything in response to them.
+
+### Session 2026-09-06 clarifications
+
+Five clarifications were accepted and integrated; see `## Clarifications` in the spec. All five concern
+the same constraint: **this repository is a fork that keeps pulling upstream Zed**, so the change surface
+must stay enumerable. They added FR-074 – FR-082 and SC-017 – SC-022, and amended FR-002, FR-021, FR-062
+and FR-066.
+
+The fourth checklist item under Content Quality is the one these clarifications put under most strain: a
+change-surface allowlist is unambiguously an implementation concern. It is retained as a requirement
+rather than deferred to the plan because it is a *constraint on the delivered product* the user stated
+directly — an implementation that ignores it is unacceptable regardless of whether the feature works — and
+because FR-078a makes it automatically verifiable, which is the test that separates a requirement from a
+preference.
+
+**One decision was made against the recommendation, and the risk is tracked rather than resolved.**
+Question 5 asked whether to reuse Zed's commit-diff machinery or build a parallel copy in the feature's
+crate. The recommendation was to build its own, keeping the volatile `git_ui` commit-diff file off the
+allowlist. The user chose reuse. That is a legitimate trade — one implementation instead of two — and it
+is now FR-080. The cost is that an actively-changing upstream file is permanently on the allowlist, so
+FR-081 (the existing commit path must behave identically), FR-082 (narrowest possible widened surface,
+plus a test that fails loudly on upstream behaviour change) and SC-021 exist specifically to bound it.
+If upstream churn in that file becomes painful, revisiting FR-080 is the first thing to reconsider.
+
+### Deviations from the default "no implementation details" posture
+
+Three deliberate deviations, each recorded here rather than silently taken:
 
 1. **The editor's own diff surface is a requirement, not an implementation choice.** FR-032, FR-033 and
    SC-010 name Zed's split diff viewer, theme, keymap and editor settings. The user's requirement was

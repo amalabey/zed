@@ -77,6 +77,13 @@ an explicit unsupported error for remote repositories.
 **Why not a copy**: FR-077. The alternative is shelling out to `git cat-file` from the feature crate,
 which bypasses Zed's repository abstraction and its remote path — exactly the silent divergence FR-077
 exists to prevent.
+
+> **This entry is a choice, not a necessity.** `RepositoryState`, `LocalRepositoryState.backend` and
+> `Repository::send_job` are all public, so the feature crate could reach the backend's
+> `load_revisions` without this entry — research.md §3 originally claimed otherwise and has been
+> corrected. The entry is kept because reaching in would put the local/remote dispatch, and the
+> "unsupported for remote projects" arm, inside a crate that should not know that shape. If the
+> allowlist ever needs shrinking, this is the cheapest entry to give up.
 **Conflict risk**: moderate. The file is large and busy, but a method appended to an `impl` block merges
 cleanly far more often than an edit inside existing logic.
 

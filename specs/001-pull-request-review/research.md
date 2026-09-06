@@ -103,13 +103,25 @@ designs a workaround for a problem that does not exist.
 list of `<revision>:<path>` specifiers, implemented for **local** repositories and returning an explicit
 "not supported for remote projects" error otherwise. The panel reports that condition and stays usable.
 
-**Rationale**: The diff needs file content at two revisions. Nothing public provides it:
+**Rationale**: The diff needs file content at two revisions, and no project-layer method offers it:
 
-- `load_blob_content(oid)` and `load_revisions(...)` exist only on the `GitRepository` **backend** trait
-  (`crates/git/src/repository.rs:805`, `:801`), reachable solely from inside `git_store`'s
-  `RepositoryState::Local`.
+- `load_blob_content(oid)` and `load_revisions(...)` exist on the `GitRepository` **backend** trait
+  (`crates/git/src/repository.rs:805`, `:801`), which is reached through
+  `RepositoryState::Local { backend, .. }`.
 - The only blob-ish public project-layer method is `blame_buffer_at_revision`
   (`crates/project/src/git_store.rs:10329`), which is not usable for this.
+
+> **Correction, made during implementation.** This section originally said the backend was "reachable
+> solely from inside `git_store`". That is wrong: `RepositoryState`, `LocalRepositoryState.backend` and
+> `Repository::send_job` are all `pub`, so the feature crate *could* call `load_revisions` directly
+> without touching `git_store.rs` at all — which would have kept allowlist entry 6 off the list.
+>
+> The additive method was implemented anyway, and the reason is a judgement rather than a necessity:
+> reaching in from the feature crate means reimplementing the local/remote dispatch — including the
+> "not supported for remote projects" arm — in a crate that has no business knowing that shape, and it
+> would diverge silently the moment upstream adds a third `RepositoryState` variant. FR-077 forbids the
+> `git cat-file` alternative; it does not forbid this one. So entry 6 is a **choice**, and if the
+> allowlist ever needs shrinking it is the cheapest entry to give up.
 
 Supporting remote projects would need a new `proto` message plus remote-server handling. That means editing
 the `.proto` schema and the generated-code crate — two more allowlisted files, both high-conflict, for a

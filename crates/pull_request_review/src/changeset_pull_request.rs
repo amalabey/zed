@@ -15,10 +15,14 @@
 //! acquired afterwards. Returning the tip would satisfy the type signature and violate the
 //! contract, so `revisions()` is the single most important function in this file.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow};
-use git::repository::RepoPath;
+use askpass::AskPassDelegate;
+use futures::FutureExt as _;
+use futures::future::Shared;
+use git::repository::{FetchOptions, RepoPath};
 use git::status::{DiffTreeType, TreeDiffStatus};
 use gpui::{App, AppContext as _, Entity, SharedString, Task};
 use project::git_store::Repository;
@@ -42,6 +46,8 @@ pub struct PullRequestChangeset {
     /// `Some` means this changeset cannot be produced at all, with the reason. Held rather than
     /// returned from the constructor so the Files tab can state the reason in place of a list.
     unsupported: Option<String>,
+    /// The revision resolution, computed once. See [`Self::shared_revisions`].
+    resolved: RefCell<Option<Shared<Task<Result<RevisionPair, String>>>>>,
 }
 
 impl PullRequestChangeset {
@@ -71,6 +77,7 @@ impl PullRequestChangeset {
             source_revision: detail.source.revision.clone(),
             destination_revision: detail.destination.revision.clone(),
             unsupported,
+            resolved: RefCell::new(None),
         }
     }
 
@@ -208,53 +215,98 @@ impl Changeset for PullRequestChangeset {
     /// here creates a branch, a worktree or a checkout, and nothing touches the index, the working
     /// tree or the stash (FR-035, contract obligation 5).
     fn revisions(&self, cx: &App) -> Task<Result<RevisionPair>> {
-        if let Err(error) = self.refuse_if_unsupported() {
-            return Task::ready(Err(error));
+        let shared = self.shared_revisions(cx);
+        cx.background_spawn(async move { shared.await.map_err(|reason| anyhow!("{reason}")) })
+    }
+}
+
+impl PullRequestChangeset {
+    /// The resolution, computed once and shared.
+    ///
+    /// `files()`, `file_diff()` and `render_refusals()` all need the same pair, and resolving it
+    /// may involve a fetch. Recomputing per call would spawn several fetches of the same objects
+    /// for one click.
+    ///
+    /// The error is a `String` rather than an `anyhow::Error` because a shared future's output has
+    /// to be cloneable, and the reason is what callers actually need.
+    fn shared_revisions(&self, cx: &App) -> Shared<Task<Result<RevisionPair, String>>> {
+        if let Some(shared) = self.resolved.borrow().clone() {
+            return shared;
         }
 
+        let unsupported = self.unsupported.clone();
         let repository = self.repository.clone();
         let source = self.source_revision.clone();
         let destination = self.destination_revision.clone();
 
-        cx.spawn(async move |cx| {
-            if source.is_empty() || destination.is_empty() {
-                return Err(anyhow!(
-                    "this pull request doesn't say which revisions it proposes"
-                ));
-            }
+        let shared = cx
+            .spawn(async move |cx| {
+                if let Some(reason) = unsupported {
+                    return Err(reason);
+                }
+                if source.is_empty() || destination.is_empty() {
+                    return Err(
+                        "this pull request doesn't say which revisions it proposes".to_string()
+                    );
+                }
 
-            // The host abbreviates revisions to 12 characters, so they are resolved locally before
-            // being handed to git. Missing objects are fetched once, then resolution is retried.
-            let head = resolve_revision(&repository, &source, cx).await?;
-            let base_tip = resolve_revision(&repository, &destination, cx).await?;
+                // The host abbreviates revisions to 12 characters, so they are resolved locally
+                // before being handed to git. A revision the repository does not have yet is
+                // fetched once — fetching objects is permitted, changing what the reviewer has
+                // checked out is not.
+                let mut head = revision_if_present(&repository, &source, cx).await;
+                let mut base_tip = revision_if_present(&repository, &destination, cx).await;
 
-            let merge_base = cx
-                .update(|cx| {
-                    repository.update(cx, |repository, cx| {
-                        // Asking git for the tree diff with `--merge-base` computes the merge base
-                        // itself, which is what makes FR-034 hold by construction rather than by
-                        // this code getting the arithmetic right.
-                        repository.diff_tree(
-                            DiffTreeType::MergeBase {
-                                base: base_tip.clone().into(),
-                                head: head.clone().into(),
-                            },
-                            cx,
-                        )
+                if head.is_none() || base_tip.is_none() {
+                    fetch_objects(&repository, cx).await;
+                    if head.is_none() {
+                        head = revision_if_present(&repository, &source, cx).await;
+                    }
+                    if base_tip.is_none() {
+                        base_tip = revision_if_present(&repository, &destination, cx).await;
+                    }
+                }
+
+                let head = head.ok_or_else(|| missing_revision_reason(&source))?;
+                let base_tip = base_tip.ok_or_else(|| missing_revision_reason(&destination))?;
+
+                // Asking git for the tree diff with `--merge-base` computes the merge base itself,
+                // which is what makes FR-034 hold by construction rather than by this code getting
+                // the arithmetic right.
+                let compared = cx
+                    .update(|cx| {
+                        repository.update(cx, |repository, cx| {
+                            repository.diff_tree(
+                                DiffTreeType::MergeBase {
+                                    base: base_tip.clone().into(),
+                                    head: head.clone().into(),
+                                },
+                                cx,
+                            )
+                        })
                     })
-                })
-                .await
-                .context("the two revisions could not be compared")?;
-            merge_base.context("the two revisions could not be compared")?;
+                    .await;
+                match compared {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        return Err(format!("the two revisions could not be compared: {error}"));
+                    }
+                    Err(_) => {
+                        return Err("the two revisions could not be compared".to_string());
+                    }
+                }
 
-            Ok(RevisionPair {
-                // `base_tip` is passed to `--merge-base`, so every consumer that uses this pair the
-                // same way gets the divergence point. It is named for what it is rather than for
-                // where it came from, so a consumer cannot mistake it for the destination tip.
-                base: base_tip,
-                head,
+                Ok(RevisionPair {
+                    // `base_tip` is always passed to `--merge-base`, so every consumer that uses
+                    // this pair gets the divergence point rather than the destination tip.
+                    base: base_tip,
+                    head,
+                })
             })
-        })
+            .shared();
+
+        *self.resolved.borrow_mut() = Some(shared.clone());
+        shared
     }
 }
 
@@ -311,17 +363,17 @@ impl PullRequestChangeset {
     }
 }
 
-/// Resolve a possibly-abbreviated revision to a full object id, fetching once if it is not present.
+/// Whether the repository already has the given revision.
 ///
-/// An unresolvable revision is the "the ref is gone from the host" condition and names which ref,
-/// rather than surfacing as an opaque git failure.
-async fn resolve_revision(
+/// A tree diff of a revision against itself is the cheapest way to ask git, and it needs no
+/// additional allowlisted touch point for `rev-parse`. `Since` is used here *only* for this
+/// presence check — never to build a diff, because a two-dot comparison would include what the
+/// destination branch acquired after the pull request was raised.
+async fn revision_if_present(
     repository: &Entity<Repository>,
     revision: &str,
     cx: &mut gpui::AsyncApp,
-) -> Result<String> {
-    // A tree diff of a revision against itself is the cheapest way to ask git whether it has the
-    // object, without adding a second allowlisted touch point for `rev-parse`.
+) -> Option<String> {
     let present = cx
         .update(|cx| {
             repository.update(cx, |repository, cx| {
@@ -338,14 +390,40 @@ async fn resolve_revision(
         .map(|result| result.is_ok())
         .unwrap_or(false);
 
-    if present {
-        return Ok(revision.to_string());
-    }
+    present.then(|| revision.to_string())
+}
 
-    Err(anyhow!(
-        "the revision {revision} isn't in this repository — it may have been removed from the \
-         pull request, or the branch may need fetching"
-    ))
+/// Bring the pull request's objects into the local repository.
+///
+/// Creates no branch, no worktree and no checkout, and touches neither the index, the working tree
+/// nor the stash (FR-035). A failure is not reported here: the caller retries resolution and states
+/// the missing-revision reason if it still cannot see the object, which is the actionable message.
+///
+/// Credentials are declined rather than prompted for. A revision fetch is a side effect of opening
+/// a diff, and putting a password prompt in front of the reviewer for work they did not explicitly
+/// ask for is the focus theft Principle III forbids — so a remote needing interactive credentials
+/// fails and the reviewer is told the revision is missing.
+async fn fetch_objects(repository: &Entity<Repository>, cx: &mut gpui::AsyncApp) {
+    let askpass = AskPassDelegate::new(cx, |_prompt, _response, _cx| {
+        // Dropping the responder declines: git sees no credential and gives up.
+    });
+
+    let fetched = cx.update(|cx| {
+        repository.update(cx, |repository, cx| {
+            repository.fetch(FetchOptions::All, askpass, cx)
+        })
+    });
+
+    if let Ok(Err(error)) = fetched.await {
+        log::info!("pull request review: could not fetch the pull request's revisions: {error}");
+    }
+}
+
+fn missing_revision_reason(revision: &str) -> String {
+    format!(
+        "the revision {revision} isn't in this repository and couldn't be fetched — it may have \
+         been removed from the pull request, or its branch may have been deleted"
+    )
 }
 
 /// Whether either side of a file can be shown as text.
@@ -416,7 +494,7 @@ mod tests {
         );
         assert!(
             source
-                .split_once("async fn resolve_revision")
+                .split_once("async fn revision_if_present")
                 .is_some_and(|(_, rest)| rest.contains("DiffTreeType::Since")),
             "the one Since use must be the presence check"
         );

@@ -14,6 +14,7 @@ path = "src/pull_request_review.rs"
 
 [dependencies]
 anyhow.workspace = true
+askpass.workspace = true
 chrono.workspace = true
 collections.workspace = true
 db.workspace = true
@@ -38,6 +39,18 @@ which.workspace = true
 workspace.workspace = true
 
 [dev-dependencies]
+db = { workspace = true, features = ["test-support"] }
+editor = { workspace = true, features = ["test-support"] }
+fs = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
+language_model.workspace = true
 libc.workspace = true
+project = { workspace = true, features = ["test-support"] }
+# Enabling `project/test-support` turns on `remote/test-support`, which adds a
+# `RemoteConnectionOptions::Mock` variant that `remote_connection` only handles under its own
+# test-support feature. Without this line the dev build of that crate fails to compile.
+remote_connection = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
+theme_settings.workspace = true
+workspace = { workspace = true, features = ["test-support"] }
+zlog.workspace = true

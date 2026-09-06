@@ -179,7 +179,7 @@ Both are strictly additive per FR-075 and both are enumerated in
 
 ### The changeset implementation
 
-- [ ] T057 [US3] Fetch the pull request's source and destination revisions into the local repository in `crates/pull_request_review/src/changeset_pull_request.rs`, creating no branch, no worktree and no checkout, and leaving the working tree, index and stash untouched (FR-035)
+- [X] T057 [US3] Fetch the pull request's source and destination revisions into the local repository in `crates/pull_request_review/src/changeset_pull_request.rs`, creating no branch, no worktree and no checkout, and leaving the working tree, index and stash untouched (FR-035)
 - [X] T058 [US3] Implement `Changeset::file_diff` in `crates/pull_request_review/src/changeset_pull_request.rs` using `Repository::diff_tree(DiffTreeType::MergeBase { base, head })` for the file set and the new blob loader for both sides, reading the new side as `<head_rev>:<path>` because `TreeDiffStatus` carries only the old oid (FR-034, research.md §1)
 - [X] T059 [US3] Set `render_refusal` at list time for binary, too-large, submodule and symlink files in `crates/pull_request_review/src/changeset_pull_request.rs`, so the Files tab can mark a file before it is opened and `file_diff` returns the refusal rather than an error (FR-037, contracts/changeset.md obligation 4)
 - [X] T060 [US3] Report a fork-sourced pull request (`source.repository != destination.repository`) as unsupported in `crates/pull_request_review/src/changeset_pull_request.rs` rather than diffing the wrong changeset (spec fork edge case: "never a silent diff of the wrong change")

@@ -160,10 +160,13 @@ fn locate_executable(
     // impossible in code is worth more than remembering not to do it.
     #[cfg(test)]
     {
-        let _ = path_variable;
+        let ignored = match path_variable {
+            Some(_) => "the project's PATH was ignored",
+            None => "there was no PATH to search",
+        };
         return Err(HostError::PrerequisiteMissing {
             detail: format!(
-                "`{program}` is never searched for in a test build; set \
+                "`{program}` is never searched for in a test build ({ignored}); set \
                  {EXECUTABLE_OVERRIDE_VAR} to exercise a real executable"
             ),
         });

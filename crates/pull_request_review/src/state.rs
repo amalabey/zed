@@ -195,6 +195,76 @@ mod tests {
         assert_eq!(parsed.author_filter, None);
     }
 
+    /// FR-021, SC-008: filters, sort and selected repository survive a restart, through Zed's own
+    /// key-value store.
+    ///
+    /// Driven through the real store rather than through serde alone, because the requirement is
+    /// about what comes back after the process has gone away — and the debounce, the key
+    /// namespacing and the store are all between the choice and that.
+    #[gpui::test]
+    async fn every_choice_round_trips_through_the_key_value_store(cx: &mut gpui::TestAppContext) {
+        let worktree = "/projects/round-trip";
+
+        let task = cx.update(|cx| save(worktree, &populated(), cx));
+        // The write is debounced, so nothing has landed yet.
+        cx.update(|cx| {
+            assert_eq!(
+                load(worktree, cx),
+                ListViewState::default(),
+                "the write must not have happened before it settled"
+            );
+        });
+
+        cx.executor().advance_clock(SETTLE_DELAY * 2);
+        task.await;
+
+        cx.update(|cx| {
+            assert_eq!(
+                load(worktree, cx),
+                populated(),
+                "every choice must come back exactly as it was stored"
+            );
+        });
+    }
+
+    /// Unreadable stored state falls back to defaults rather than failing the panel.
+    #[gpui::test]
+    async fn unparseable_stored_state_loads_as_defaults(cx: &mut gpui::TestAppContext) {
+        let worktree = "/projects/corrupt";
+        let key = storage_key(worktree);
+
+        let write = cx.update(|cx| {
+            let store = KeyValueStore::global(cx);
+            cx.background_spawn(async move { store.write_kvp(key, "{ not json".into()).await })
+        });
+        write.await.expect("the store should accept the write");
+
+        cx.update(|cx| {
+            assert_eq!(
+                load(worktree, cx),
+                ListViewState::default(),
+                "a value an older build wrote must not stop the panel opening"
+            );
+        });
+    }
+
+    /// Two projects open at once keep separate choices.
+    #[gpui::test]
+    async fn choices_do_not_leak_between_worktrees(cx: &mut gpui::TestAppContext) {
+        let task = cx.update(|cx| save("/projects/one", &populated(), cx));
+        cx.executor().advance_clock(SETTLE_DELAY * 2);
+        task.await;
+
+        cx.update(|cx| {
+            assert_eq!(load("/projects/one", cx), populated());
+            assert_eq!(
+                load("/projects/two", cx),
+                ListViewState::default(),
+                "another project must not inherit these filters"
+            );
+        });
+    }
+
     #[test]
     fn keys_are_namespaced_per_worktree() {
         assert_ne!(storage_key("/a/project"), storage_key("/b/project"));

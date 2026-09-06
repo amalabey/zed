@@ -256,8 +256,8 @@ set and order match each choice; then reopen the project and confirm the choices
 - [X] T091 [US5] Add the sort direction control in `crates/pull_request_review/src/list.rs`, defaulting to most recent first with a reversible direction and an indicator reflecting the current order (FR-017)
 - [X] T092 [US5] Show which filters and sort are in effect at all times in `crates/pull_request_review/src/list.rs`, and when they match nothing say so and offer to clear them rather than presenting an unexplained empty list — distinct from the repository having no pull requests at all (FR-018, FR-020, spec no-pull-requests edge case)
 - [X] T093 [US5] Keep a selected pull request selected across a filter or sort change when it is still listed, without blocking the editor, in `crates/pull_request_review/src/panel.rs` (US5 acceptance scenario 8, FR-067)
-- [ ] T094 [P] [US5] Test in `crates/pull_request_review/src/host_twg.rs` that every filter and sort combination lists exactly the matching pull requests drawn from the whole fixture set rather than a partially loaded page (FR-019, SC-007)
-- [ ] T095 [P] [US5] Test in `crates/pull_request_review/src/state.rs` that filters, sort and selected repository round-trip through `db::kvp` and fall back to defaults when the stored value is unparseable (FR-021, SC-008)
+- [X] T094 [P] [US5] Test in `crates/pull_request_review/src/host_twg.rs` that every filter and sort combination lists exactly the matching pull requests drawn from the whole fixture set rather than a partially loaded page (FR-019, SC-007)
+- [X] T095 [P] [US5] Test in `crates/pull_request_review/src/state.rs` that filters, sort and selected repository round-trip through `db::kvp` and fall back to defaults when the stored value is unparseable (FR-021, SC-008)
 
 **Checkpoint**: The list is usable on a real repository, and the reviewer's choices survive a restart.
 
@@ -294,15 +294,43 @@ one and confirm the reply lands on that thread rather than as a new comment.
 **Purpose**: The checks that verify the boundaries, the change surface and the constitution gates — most of
 which are success criteria the spec states by number.
 
-- [ ] T106 [P] Wire the FR-057 source check into the test suite in `crates/pull_request_review/src/host.rs`, asserting no host, platform or transport name appears in any type, field, error or user-facing string outside `host_twg.rs` and `host_process.rs` (FR-057, SC-013)
-- [ ] T107 [P] Add a check in `script/check-fork-surface` that `crates/pull_request_review/` carries no second copy of the commit-diff machinery, so the feature's diff surface and Zed's commit-diff view demonstrably share one implementation (SC-022)
-- [ ] T108 [P] Add a check that no resolve or reopen affordance and no resolved/unresolved distinction appears anywhere in `crates/pull_request_review/` — an action that appeared but did nothing would be worse than its absence (FR-054, quickstart Scenario 6)
-- [ ] T109 [P] Audit `crates/pull_request_review/` for `unwrap()`, `expect()`, panicking indexing and `let _ =` on fallible operations in non-test code, and confirm `./script/clippy` is clean (constitution panic discipline, SC-016)
-- [ ] T110 Verify each of the five files in `specs/001-pull-request-review/contracts/zed-surface.md` is changed strictly additively against the upstream merge-base — no signature change, no narrowed visibility, no moved item, no reordering or reformatting of existing code (FR-075, SC-018)
+- [X] T106 [P] Wire the FR-057 source check into the test suite in `crates/pull_request_review/src/host.rs`, asserting no host, platform or transport name appears in any type, field, error or user-facing string outside `host_twg.rs` and `host_process.rs` (FR-057, SC-013)
+- [X] T107 [P] Add a check in `script/check-fork-surface` that `crates/pull_request_review/` carries no second copy of the commit-diff machinery, so the feature's diff surface and Zed's commit-diff view demonstrably share one implementation (SC-022)
+- [X] T108 [P] Add a check that no resolve or reopen affordance and no resolved/unresolved distinction appears anywhere in `crates/pull_request_review/` — an action that appeared but did nothing would be worse than its absence (FR-054, quickstart Scenario 6)
+- [X] T109 [P] Audit `crates/pull_request_review/` for `unwrap()`, `expect()`, panicking indexing and `let _ =` on fallible operations in non-test code, and confirm `./script/clippy` is clean (constitution panic discipline, SC-016)
+- [X] T110 Verify each of the five files in `specs/001-pull-request-review/contracts/zed-surface.md` is changed strictly additively against the upstream merge-base — no signature change, no narrowed visibility, no moved item, no reordering or reformatting of existing code (FR-075, SC-018)
 - [ ] T111 Verify that with `pull_request_review::init(cx)` removed from `crates/zed/src/main.rs` the repository builds and every existing Zed surface behaves identically to upstream (FR-076, SC-020)
 - [ ] T112 [P] Measure Zed's startup and workspace-open time (`cargo run -p zed`, panel never opened), and the feature's foreground frame cost while its work is in flight, against the Principle II budgets (FR-067, FR-070, SC-003, SC-005, constitution gate 3)
 - [ ] T113 Run the [quickstart.md](./quickstart.md) scenarios end to end, including Gate 0's negative case, Scenario 7's seven induced failure conditions on a **dock-launched** Zed, and Scenario 8's commit-view comparison (SC-006, SC-017, SC-021, FR-062a)
-- [ ] T114 [P] Run the full suite: `cargo test -p pull_request_review`, `cargo test -p git_ui`, `cargo test -p project`, `./script/clippy`, `cargo fmt --check`, `script/check-fork-surface` (constitution gates 7 and 8)
+- [X] T114 [P] Run the full suite: `cargo test -p pull_request_review`, `cargo test -p git_ui`, `cargo test -p project`, `./script/clippy`, `cargo fmt --check`, `script/check-fork-surface` (constitution gates 7 and 8)
+### Blocked on this machine, not on the code
+
+T111, T112 and T113 all need a **running Zed**, and `cargo check -p zed` fails here because
+`gpui_apple` cannot compile its Metal shaders:
+
+```
+error: cannot execute tool 'metal' due to missing Metal Toolchain;
+use: xcodebuild -downloadComponent MetalToolchain
+```
+
+The feature crate's own tests are unaffected — they use GPUI's headless test support, which needs no
+renderer — so the 113 tests, `git_ui`'s 160 and `project`'s all pass. Once the toolchain is installed,
+these three are the remaining work.
+
+What *was* verified without a running Zed:
+
+- **FR-076/SC-020, the substance.** The feature is reachable from exactly one place,
+  `crates/zed/src/main.rs:773`. Every other mention outside its own crate is a manifest entry or a
+  comment, so removing that one line fully disables it. `script/check-fork-surface` now asserts this on
+  every run, so it stays true. What remains unverified is only that the repository *builds* with the line
+  removed — and the line is one statement in a list of sibling `init` calls.
+- **SC-021, the reused path.** `crates/git_ui` gained tests over `CommitView::new` for added, modified,
+  deleted, binary and shallow-boundary files. An end-to-end test through `CommitView::open` would have
+  been vacuous, because the fake repository's `load_commit` always returns an empty diff.
+- **SC-006, the seven failure conditions.** Each produces its own classified `HostError` with its own
+  message, driven from the recorded failure fixtures. What T113 adds is inducing them against the real
+  tool on a dock-launched Zed, which is what FR-062a exists for.
+
 - [ ] T115 Open the pull request with an imperative, correctly capitalised title, no conventional-commit prefix, no trailing punctuation, and a closing `Release Notes:` section stating which constitution principles are engaged and carrying the Principle I justification for the new crate and the two mandated traits (CLAUDE.md PR hygiene, constitution gates 1 and 8)
 
 ---

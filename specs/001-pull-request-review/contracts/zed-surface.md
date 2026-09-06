@@ -141,4 +141,39 @@ baked into a build gate.
 property — no signature change, no narrowed visibility, no moved item, no reformatting — is verified in
 review against the merge-base diff, per SC-018. Automating that is possible but out of scope here; the
 file-level gate is what stops surface creep, which is the failure mode that actually happens.
+
+The check also runs four **feature checks**, covering the ways the feature could drift from what the spec
+requires while every file stayed exactly where it belongs:
+
+| Check | Discharges |
+|---|---|
+| The feature is reachable from exactly one registration | FR-076, SC-020 |
+| The commit-diff machinery is not duplicated in the feature crate | SC-022 |
+| No thread-resolution affordance appears anywhere | FR-054 |
+| No `unwrap`, `expect` or discarded error in shipping code | constitution panic discipline, SC-016 |
+
+All four read the *shipping* half of each file — everything before its `#[cfg(test)]` module — and skip
+comment lines. Tests name the things they forbid in order to forbid them, and the clearest way to record
+why something is absent is a comment saying so; a check that tripped on either would be one nobody could
+keep passing.
+
+## SC-018 verification, against the merge-base
+
+Recorded so a reviewer can check the claim rather than take it.
+
+| File | Change | Deletions |
+|---|---|---|
+| `Cargo.toml` | 2 added lines | none |
+| `Cargo.lock` | generated | none |
+| `crates/zed/Cargo.toml` | 1 added line | none |
+| `crates/zed/src/main.rs` | 1 added line | none |
+| `crates/project/src/git_store.rs` | +96 | **none** |
+| `crates/git_ui/src/commit_view.rs` | +239 | **one line** |
+| `README.md` | +3 | none |
+
+The single deleted line is `    fn new(` becoming `    pub fn new(` — a visibility widening, which
+Principle VI's definition of strictly additive explicitly permits ("adds new items, **or widens the
+visibility of existing ones**"). Its signature is unchanged, nothing was moved, nothing was reformatted.
+`git_store.rs` has *zero* deletions. Each of the two code files has exactly two hunks: one at the point of
+the addition, one appending a test module at the end.
 </content>

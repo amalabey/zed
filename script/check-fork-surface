@@ -113,6 +113,123 @@ run_gate() {
   echo "OK: the change surface is within the allowlist."
 }
 
+# The allowlist stops surface *creep*. These stop the other ways the feature could drift away from
+# what the spec requires while every file stayed exactly where it belongs.
+#
+# All three read the *shipping* half of each file — everything before its `#[cfg(test)]` module —
+# and skip comment lines. Tests name the things they forbid in order to forbid them, and the
+# clearest way to record why something is absent is a comment saying so; a check that tripped on
+# either would be a check nobody could keep passing.
+run_feature_checks() {
+  [[ -d "${FEATURE_CRATE}" ]] || return 0
+
+  echo
+  echo "Feature checks"
+  FEATURE_CRATE="${FEATURE_CRATE}" python3 - <<'PYTHON'
+import glob
+import os
+import re
+import sys
+
+crate = os.environ["FEATURE_CRATE"]
+sources = sorted(glob.glob(os.path.join(crate, "src", "*.rs")))
+if not sources:
+    print(f"error: no sources found under {crate}/src", file=sys.stderr)
+    sys.exit(1)
+
+
+def shipping_lines(path):
+    """Numbered, non-comment lines of the part of a file that ships."""
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    production = text.split("\n#[cfg(test)]\nmod tests {", 1)[0]
+    for number, line in enumerate(production.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            continue
+        yield number, line
+
+
+CHECKS = [
+    # SC-022: one implementation of the commit-diff machinery, not two. Reusing the editor's own
+    # view is the whole point of FR-080; a copy that grew here would pass every other check while
+    # quietly reintroducing the duplication that decision was made to avoid.
+    (
+        "SC-022: the commit-diff machinery is not duplicated",
+        re.compile(r"\bMultiBuffer::new\b|\bbuild_buffer_diff\b|BufferDiff::new_with_base"),
+        "FR-080 chose reuse over duplication: the diff surface must go through git_ui's\n"
+        "  CommitView rather than assembling its own multibuffer.",
+    ),
+    # FR-054: resolving threads is out of scope, so no affordance for it may exist. Identifier-
+    # shaped patterns only — "unresolved" is an ordinary English word that turns up in prose about
+    # unrelated things, and matching it would make the check useless rather than strict.
+    (
+        "FR-054: no thread-resolution affordance",
+        re.compile(
+            r"\bresolve_thread\b|\bis_resolved\b|\bmark_resolved\b|\bset_resolved\b"
+            r"|\breopen_thread\b|\bresolution_state\b|\bThreadResolution\b"
+        ),
+        "Resolving threads is out of scope. An action that appeared but did nothing would be\n"
+        "  worse than its absence.",
+    ),
+    # Panic discipline: a panic in this feature takes the reviewer's editor down with it, and a
+    # discarded error is a failure they never hear about.
+    (
+        "Panic discipline: no unwrap, expect or discarded error in shipping code",
+        re.compile(r"\.unwrap\(\)|\.expect\(|let _ = "),
+        "Propagate with ?, or handle explicitly. .log_err() is fine where an error is\n"
+        "  deliberately not propagated.",
+    ),
+]
+
+failures = 0
+
+# FR-076, SC-020: removing the one registration must fully disable the feature. If a second entry
+# point appeared, "remove one line to get upstream's behaviour back" would quietly stop being true,
+# and there would be no way to tell short of reading every call site.
+registrations = []
+for path in glob.glob("crates/*/src/**/*.rs", recursive=True):
+    if path.startswith(f"{crate}/"):
+        continue
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            if "pull_request_review::" in line and not line.strip().startswith("//"):
+                registrations.append(f"{path}:{number}: {line.strip()}")
+
+if registrations == ["crates/zed/src/main.rs:773: pull_request_review::init(cx);"] or (
+    len(registrations) == 1 and registrations[0].startswith("crates/zed/src/main.rs:")
+):
+    print("  FR-076: the feature is reachable from exactly one registration")
+else:
+    failures += 1
+    print("  FAILED — FR-076: the feature must be reachable from exactly one registration")
+    for registration in registrations or ["(none found)"]:
+        print(f"      {registration}")
+    print("      Removing that one line must be enough to get upstream's behaviour back.")
+
+for label, pattern, remedy in CHECKS:
+    offenders = [
+        f"{path}:{number}: {line.strip()}"
+        for path in sources
+        for number, line in shipping_lines(path)
+        if pattern.search(line)
+    ]
+    if offenders:
+        failures += 1
+        # Printed in place rather than to stderr, so the checks read in order; the exit code is
+        # what gates.
+        print(f"  FAILED — {label}")
+        for offender in offenders:
+            print(f"      {offender}")
+        for line in remedy.splitlines():
+            print(f"      {line.strip()}")
+    else:
+        print(f"  {label}")
+
+sys.exit(1 if failures else 0)
+PYTHON
+}
+
 # A check that cannot fail is not a check (SC-017). This modifies one off-allowlist pre-existing file,
 # asserts the gate names it, and restores it.
 run_self_test() {
@@ -171,6 +288,7 @@ run_self_test() {
 case "${1:-}" in
 "")
   run_gate
+  run_feature_checks
   ;;
 --self-test)
   run_self_test

@@ -102,16 +102,7 @@ impl PullRequestHost for TwgHost {
                 summaries.extend(page);
             }
 
-            summaries.sort_by(|left, right| match query.sort {
-                SortDirection::MostRecentFirst => {
-                    right.last_activity_at.cmp(&left.last_activity_at)
-                }
-                SortDirection::LeastRecentFirst => {
-                    left.last_activity_at.cmp(&right.last_activity_at)
-                }
-            });
-            summaries.truncate(query.limit.max(1));
-            Ok(summaries)
+            Ok(order_and_limit(summaries, query.sort, query.limit))
         })
     }
 
@@ -244,6 +235,39 @@ pub fn list_invocations(repository: &RepositoryCoordinates, query: &ListQuery) -
             args
         })
         .collect()
+}
+
+/// Put the merged pages in order and take the requested number.
+///
+/// The ordering is applied to *everything the host returned across every state*, not to each page
+/// in turn. That is what FR-019 and SC-007 require: a filter or sort applied to a partial page and
+/// presented as complete is precisely the bug they guard against, and it would be invisible — the
+/// list would look perfectly plausible.
+///
+/// Deduplicated by identity, because a pull request that changes state between two of the fan-out
+/// calls would otherwise appear twice.
+pub fn order_and_limit(
+    mut summaries: Vec<PullRequestSummary>,
+    sort: SortDirection,
+    limit: usize,
+) -> Vec<PullRequestSummary> {
+    let mut seen = std::collections::HashSet::new();
+    summaries.retain(|summary| seen.insert(summary.id.clone()));
+
+    summaries.sort_by(|left, right| {
+        let ordering = match sort {
+            SortDirection::MostRecentFirst => right.last_activity_at.cmp(&left.last_activity_at),
+            SortDirection::LeastRecentFirst => left.last_activity_at.cmp(&right.last_activity_at),
+        };
+        // Ties broken by number, so the order is stable rather than dependent on which fan-out
+        // call happened to answer first.
+        ordering.then_with(|| match sort {
+            SortDirection::MostRecentFirst => right.id.number.cmp(&left.id.number),
+            SortDirection::LeastRecentFirst => left.id.number.cmp(&right.id.number),
+        })
+    });
+    summaries.truncate(limit.max(1));
+    summaries
 }
 
 /// `AuthorFilter::Me` is resolved to the viewer's nickname by the caller before it gets here,
@@ -1286,6 +1310,88 @@ mod tests {
         let comment = parse_comment(&value).expect("must parse");
         let anchor = comment.anchor.expect("inline");
         assert_eq!(*anchor.lines.start(), 1, "lines are 1-based");
+    }
+
+    /// FR-019, SC-007: every filter and sort combination is applied to the repository's whole set,
+    /// not to a page.
+    ///
+    /// The fan-out is what makes this non-trivial: `All` is several calls, and ordering each call's
+    /// answer separately would produce a list that looks right and is wrong.
+    #[test]
+    fn filters_and_sort_apply_to_the_whole_set_rather_than_a_page() {
+        let all_states = parse_list(LIST_MULTI_STATE, &repository(), now()).expect("must parse");
+
+        // Split the fixture into "pages" the way the state fan-out would, then merge them. The
+        // result must not depend on how the rows were divided.
+        let (first_page, second_page) = all_states.split_at(3);
+        let merged = order_and_limit(
+            first_page.iter().chain(second_page).cloned().collect(),
+            SortDirection::MostRecentFirst,
+            100,
+        );
+        let ordered_in_one_go =
+            order_and_limit(all_states.clone(), SortDirection::MostRecentFirst, 100);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|summary| summary.id.number)
+                .collect::<Vec<_>>(),
+            ordered_in_one_go
+                .iter()
+                .map(|summary| summary.id.number)
+                .collect::<Vec<_>>(),
+            "the order must not depend on how the host's answers were paged"
+        );
+
+        // Most recent first, and its exact reverse.
+        let descending: Vec<u64> = ordered_in_one_go
+            .iter()
+            .map(|summary| summary.id.number)
+            .collect();
+        let ascending: Vec<u64> =
+            order_and_limit(all_states.clone(), SortDirection::LeastRecentFirst, 100)
+                .iter()
+                .map(|summary| summary.id.number)
+                .collect();
+        assert_eq!(
+            ascending,
+            descending.iter().rev().cloned().collect::<Vec<_>>(),
+            "reversing the sort must reverse the list, not reshuffle it"
+        );
+
+        for window in ordered_in_one_go.windows(2) {
+            assert!(
+                window[0].last_activity_at >= window[1].last_activity_at,
+                "most-recent-first must be monotonic"
+            );
+        }
+
+        // A limit takes the first N *of the ordered whole set*, so the newest rows survive it.
+        let limited = order_and_limit(all_states.clone(), SortDirection::MostRecentFirst, 3);
+        assert_eq!(limited.len(), 3);
+        assert_eq!(
+            limited
+                .iter()
+                .map(|summary| summary.id.number)
+                .collect::<Vec<_>>(),
+            descending[..3].to_vec(),
+            "a limit must not drop rows that sort above the ones it keeps"
+        );
+
+        // A limit of zero would be a list nobody asked for; one row is the floor.
+        assert_eq!(
+            order_and_limit(all_states, SortDirection::MostRecentFirst, 0).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_pull_request_that_changes_state_mid_fan_out_is_not_listed_twice() {
+        let rows = parse_list(LIST_MULTI_STATE, &repository(), now()).expect("must parse");
+        // The same row coming back from two of the per-state calls.
+        let duplicated: Vec<PullRequestSummary> = rows.iter().chain(rows.iter()).cloned().collect();
+        let merged = order_and_limit(duplicated, SortDirection::MostRecentFirst, 100);
+        assert_eq!(merged.len(), rows.len());
     }
 
     #[test]

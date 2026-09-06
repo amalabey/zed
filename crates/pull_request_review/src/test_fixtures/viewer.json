@@ -1,0 +1,8 @@
+{
+  "type": "user",
+  "display_name": "Ada Lovelace",
+  "nickname": "ada",
+  "account_id": "712020:aaaa-1111",
+  "uuid": "{aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa}",
+  "links": { "avatar": { "href": "https://example.invalid/avatar/ada.png" } }
+}

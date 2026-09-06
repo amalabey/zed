@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+
+# Constitution gate 8 / spec FR-078: this repository is a fork that keeps merging upstream Zed, so the
+# set of pre-existing files feature work modifies has to stay enumerable. Convention and code review are
+# not enforcement, because surface drift stays invisible until the merge that conflicts with it.
+#
+# The upstream remote and ref are configuration rather than constants: hard-coding "upstream/main" would
+# bake a guess into a build gate, and this checkout has no such remote.
+#
+#   ZED_UPSTREAM_REF   the ref to take the merge-base against (e.g. upstream/main)
+#
+# Usage:
+#   script/check-fork-surface              run the gate
+#   script/check-fork-surface --self-test  prove the gate bites (FR-078a, SC-017)
+
+set -euo pipefail
+
+ALLOWLIST_CONTRACT="specs/001-pull-request-review/contracts/zed-surface.md"
+FEATURE_CRATE="crates/pull_request_review"
+
+cd "$(dirname "$0")/.."
+
+resolve_upstream_ref() {
+  if [[ -n "${ZED_UPSTREAM_REF:-}" ]]; then
+    if ! git rev-parse --verify --quiet "${ZED_UPSTREAM_REF}^{commit}" >/dev/null; then
+      echo "error: ZED_UPSTREAM_REF='${ZED_UPSTREAM_REF}' does not resolve to a commit" >&2
+      exit 1
+    fi
+    echo "${ZED_UPSTREAM_REF}"
+    return
+  fi
+
+  local candidate
+  for candidate in upstream/main upstream/master origin/main origin/master main master; do
+    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+      echo "${candidate}"
+      return
+    fi
+  done
+
+  echo "error: no upstream ref found. Set ZED_UPSTREAM_REF to the ref this fork tracks." >&2
+  exit 1
+}
+
+# The allowlist is parsed out of the contract rather than duplicated here, so there is exactly one place
+# an entry can be added and exactly one place a reviewer has to look to see why it was added.
+read_allowlist() {
+  if [[ ! -f "${ALLOWLIST_CONTRACT}" ]]; then
+    echo "error: allowlist contract not found at ${ALLOWLIST_CONTRACT}" >&2
+    exit 1
+  fi
+
+  sed -n 's/^### [0-9]\{1,\}\. `\([^`]*\)`.*$/\1/p' "${ALLOWLIST_CONTRACT}"
+}
+
+# Paths the fork added cannot conflict with upstream, so they never trip the gate (FR-078b). "Added"
+# means absent at the merge-base, which is what the diff's A status reports.
+modified_preexisting_paths() {
+  local base="$1"
+  # A lowercase filter letter excludes that status, so this is every change except an addition.
+  git diff --no-renames --diff-filter=a --name-only "${base}" --
+}
+
+run_gate() {
+  local upstream_ref merge_base allowlist offenders matched path
+  upstream_ref="$(resolve_upstream_ref)"
+
+  if ! merge_base="$(git merge-base HEAD "${upstream_ref}")"; then
+    echo "error: could not compute merge-base of HEAD with ${upstream_ref}" >&2
+    exit 1
+  fi
+
+  echo "Change surface gate (constitution gate 8, spec FR-078)"
+  echo "  upstream ref: ${upstream_ref}"
+  echo "  merge-base:   ${merge_base}"
+
+  allowlist="$(read_allowlist)"
+  if [[ -z "${allowlist}" ]]; then
+    echo "error: parsed an empty allowlist from ${ALLOWLIST_CONTRACT}" >&2
+    exit 1
+  fi
+
+  offenders=()
+  matched=()
+  while IFS= read -r path; do
+    [[ -z "${path}" ]] && continue
+    if grep -Fxq -- "${path}" <<<"${allowlist}"; then
+      matched+=("${path}")
+    else
+      offenders+=("${path}")
+    fi
+  done < <(modified_preexisting_paths "${merge_base}")
+
+  if [[ ${#offenders[@]} -eq 0 ]]; then
+    if [[ ${#matched[@]} -gt 0 ]]; then
+      echo "  allowlisted pre-existing files modified:"
+      printf '    %s\n' "${matched[@]}"
+    else
+      echo "  no pre-existing files modified"
+    fi
+  else
+    echo
+    echo "error: ${#offenders[@]} pre-existing file(s) modified that are not on the allowlist:" >&2
+    printf '    %s\n' "${offenders[@]}" >&2
+    echo >&2
+    echo "Each of these is a merge conflict on every future upstream pull. Either move the change into" >&2
+    echo "${FEATURE_CRATE}/, or add an entry to ${ALLOWLIST_CONTRACT} stating why widening was" >&2
+    echo "preferred over copying — which is a reviewed decision, not a quiet one." >&2
+    exit 1
+  fi
+
+  echo
+  echo "OK: the change surface is within the allowlist."
+}
+
+# The allowlist stops surface *creep*. These stop the other ways the feature could drift away from
+# what the spec requires while every file stayed exactly where it belongs.
+#
+# All three read the *shipping* half of each file — everything before its `#[cfg(test)]` module —
+# and skip comment lines. Tests name the things they forbid in order to forbid them, and the
+# clearest way to record why something is absent is a comment saying so; a check that tripped on
+# either would be a check nobody could keep passing.
+run_feature_checks() {
+  [[ -d "${FEATURE_CRATE}" ]] || return 0
+
+  echo
+  echo "Feature checks"
+  FEATURE_CRATE="${FEATURE_CRATE}" python3 - <<'PYTHON'
+import glob
+import os
+import re
+import sys
+
+crate = os.environ["FEATURE_CRATE"]
+sources = sorted(glob.glob(os.path.join(crate, "src", "*.rs")))
+if not sources:
+    print(f"error: no sources found under {crate}/src", file=sys.stderr)
+    sys.exit(1)
+
+
+def shipping_lines(path):
+    """Numbered, non-comment lines of the part of a file that ships."""
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    production = text.split("\n#[cfg(test)]\nmod tests {", 1)[0]
+    for number, line in enumerate(production.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            continue
+        yield number, line
+
+
+CHECKS = [
+    # SC-022: one implementation of the commit-diff machinery, not two. Reusing the editor's own
+    # view is the whole point of FR-080; a copy that grew here would pass every other check while
+    # quietly reintroducing the duplication that decision was made to avoid.
+    (
+        "SC-022: the commit-diff machinery is not duplicated",
+        re.compile(r"\bMultiBuffer::new\b|\bbuild_buffer_diff\b|BufferDiff::new_with_base"),
+        "FR-080 chose reuse over duplication: the diff surface must go through git_ui's\n"
+        "  CommitView rather than assembling its own multibuffer.",
+    ),
+    # FR-054: resolving threads is out of scope, so no affordance for it may exist. Identifier-
+    # shaped patterns only — "unresolved" is an ordinary English word that turns up in prose about
+    # unrelated things, and matching it would make the check useless rather than strict.
+    (
+        "FR-054: no thread-resolution affordance",
+        re.compile(
+            r"\bresolve_thread\b|\bis_resolved\b|\bmark_resolved\b|\bset_resolved\b"
+            r"|\breopen_thread\b|\bresolution_state\b|\bThreadResolution\b"
+        ),
+        "Resolving threads is out of scope. An action that appeared but did nothing would be\n"
+        "  worse than its absence.",
+    ),
+    # Panic discipline: a panic in this feature takes the reviewer's editor down with it, and a
+    # discarded error is a failure they never hear about.
+    (
+        "Panic discipline: no unwrap, expect or discarded error in shipping code",
+        re.compile(r"\.unwrap\(\)|\.expect\(|let _ = "),
+        "Propagate with ?, or handle explicitly. .log_err() is fine where an error is\n"
+        "  deliberately not propagated.",
+    ),
+]
+
+failures = 0
+
+# FR-076, SC-020: removing the one registration must fully disable the feature. If a second entry
+# point appeared, "remove one line to get upstream's behaviour back" would quietly stop being true,
+# and there would be no way to tell short of reading every call site.
+registrations = []
+for path in glob.glob("crates/*/src/**/*.rs", recursive=True):
+    if path.startswith(f"{crate}/"):
+        continue
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            if "pull_request_review::" in line and not line.strip().startswith("//"):
+                registrations.append(f"{path}:{number}: {line.strip()}")
+
+if registrations == ["crates/zed/src/main.rs:773: pull_request_review::init(cx);"] or (
+    len(registrations) == 1 and registrations[0].startswith("crates/zed/src/main.rs:")
+):
+    print("  FR-076: the feature is reachable from exactly one registration")
+else:
+    failures += 1
+    print("  FAILED — FR-076: the feature must be reachable from exactly one registration")
+    for registration in registrations or ["(none found)"]:
+        print(f"      {registration}")
+    print("      Removing that one line must be enough to get upstream's behaviour back.")
+
+for label, pattern, remedy in CHECKS:
+    offenders = [
+        f"{path}:{number}: {line.strip()}"
+        for path in sources
+        for number, line in shipping_lines(path)
+        if pattern.search(line)
+    ]
+    if offenders:
+        failures += 1
+        # Printed in place rather than to stderr, so the checks read in order; the exit code is
+        # what gates.
+        print(f"  FAILED — {label}")
+        for offender in offenders:
+            print(f"      {offender}")
+        for line in remedy.splitlines():
+            print(f"      {line.strip()}")
+    else:
+        print(f"  {label}")
+
+sys.exit(1 if failures else 0)
+PYTHON
+}
+
+# A check that cannot fail is not a check (SC-017). This modifies one off-allowlist pre-existing file,
+# asserts the gate names it, and restores it.
+run_self_test() {
+  local allowlist candidate target
+
+  echo "Self-test: proving the gate bites (SC-017)"
+  allowlist="$(read_allowlist)"
+
+  target=""
+  for candidate in crates/editor/src/editor.rs crates/gpui/src/gpui.rs crates/workspace/src/workspace.rs; do
+    [[ -f "${candidate}" ]] || continue
+    grep -Fxq -- "${candidate}" <<<"${allowlist}" && continue
+    # Only touch a file with nothing of the author's in it, so restoring cannot discard their work.
+    if [[ -z "$(git status --porcelain -- "${candidate}")" ]]; then
+      target="${candidate}"
+      break
+    fi
+  done
+
+  if [[ -z "${target}" ]]; then
+    echo "error: found no clean off-allowlist file to perturb; cannot self-test" >&2
+    exit 1
+  fi
+
+  echo "  perturbing ${target}"
+  # shellcheck disable=SC2064
+  trap "git checkout --quiet -- '${target}'" EXIT
+  printf '\n// check-fork-surface self-test scratch\n' >>"${target}"
+
+  local output status
+  set +e
+  output="$(run_gate 2>&1)"
+  status=$?
+  set -e
+
+  git checkout --quiet -- "${target}"
+  trap - EXIT
+
+  if [[ ${status} -eq 0 ]]; then
+    echo "${output}"
+    echo "error: the gate passed while ${target} was modified. It is not enforcing anything." >&2
+    exit 1
+  fi
+
+  if ! grep -Fq -- "${target}" <<<"${output}"; then
+    echo "${output}"
+    echo "error: the gate failed but did not name ${target}, so its output is not actionable." >&2
+    exit 1
+  fi
+
+  echo "  the gate failed and named ${target}, as it must"
+  echo
+  echo "OK: the gate bites."
+}
+
+case "${1:-}" in
+"")
+  run_gate
+  run_feature_checks
+  ;;
+--self-test)
+  run_self_test
+  ;;
+*)
+  echo "usage: $0 [--self-test]" >&2
+  exit 1
+  ;;
+esac

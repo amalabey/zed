@@ -312,6 +312,59 @@ mod tests {
         assert_eq!(commit.author_name.as_ref(), "Ada Lovelace");
     }
 
+    /// FR-069, SC-016: cancelling an in-flight diff stops the underlying work rather than only
+    /// discarding its result.
+    ///
+    /// The distinction is the whole point of the requirement, and it is observable: if the work
+    /// were merely abandoned, the future would still be alive and its guard would not have been
+    /// dropped. The blob load and the revision fetch live inside that future, so dropping it is
+    /// what stops them — which is why `open_file` hands its task to the panel to hold rather than
+    /// detaching it.
+    #[gpui::test]
+    async fn cancelling_a_diff_drops_the_work_rather_than_discarding_its_result(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::rc::Rc;
+
+        struct DropGuard(Rc<std::cell::Cell<bool>>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let dropped = Rc::new(std::cell::Cell::new(false));
+        let completed = Rc::new(std::cell::Cell::new(false));
+
+        let task = cx.update(|cx| {
+            let guard = DropGuard(dropped.clone());
+            let completed = completed.clone();
+            cx.spawn(async move |_cx| {
+                // Stands in for the revision fetch and the blob load: work that has started and
+                // not finished.
+                futures::future::pending::<()>().await;
+                drop(guard);
+                completed.set(true);
+            })
+        });
+
+        cx.run_until_parked();
+        assert!(!dropped.get(), "the work has not been cancelled yet");
+        assert!(!completed.get(), "the work has not finished either");
+
+        drop(task);
+        cx.run_until_parked();
+
+        assert!(
+            dropped.get(),
+            "dropping the task must drop the work in flight, not leave it running"
+        );
+        assert!(
+            !completed.get(),
+            "the cancelled work must not have run to completion"
+        );
+    }
+
     /// FR-039: one item reused, not a tab per file.
     #[test]
     fn successive_file_opens_reuse_one_item() {

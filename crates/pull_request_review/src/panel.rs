@@ -688,6 +688,25 @@ impl PullRequestPanel {
         self.host.clone()
     }
 
+    /// Swap in a host and reload.
+    ///
+    /// The production path builds its host at the crate's composition point, which a test cannot
+    /// reach in. This is the seam that lets the panel's own behaviour — the two-phase load, the
+    /// selection rules — be tested against a host that answers instantly and counts its calls.
+    #[cfg(test)]
+    pub(crate) fn replace_host_for_test(
+        &mut self,
+        coordinates: RepositoryCoordinates,
+        host: Rc<dyn PullRequestHost>,
+        cx: &mut Context<Self>,
+    ) {
+        self.coordinates = Ok(coordinates);
+        self.host = Some(host);
+        self.verdicts.clear();
+        self.selected = None;
+        self.load_list(cx);
+    }
+
     /// The diff item this panel opened, if it is still the one being reused (FR-039).
     pub fn diff_item_id(&self) -> Option<gpui::EntityId> {
         self.diff_item_id
@@ -880,6 +899,505 @@ impl Panel for PullRequestPanel {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::changeset::ChangeKind;
+    use crate::host::{BranchRef, CommentThread, DraftComment, PullRequestState, Verdict};
+    use chrono::{TimeZone as _, Utc};
+    use gpui::{TestAppContext, VisualTestContext};
+    use std::cell::{Cell, RefCell};
+    use util::path;
+
+    /// A host that answers from memory, counts its calls, and can be told to leave a call pending.
+    ///
+    /// Counting calls is what lets the two-phase load be tested as a *bound* rather than as a
+    /// sequence of screenshots: FR-012 is satisfied by not making 500 calls, and that is directly
+    /// observable here.
+    struct FakeHost {
+        summaries: Vec<PullRequestSummary>,
+        detail_calls: Rc<Cell<usize>>,
+        list_calls: Rc<Cell<usize>>,
+        /// Numbers whose `detail` never resolves, standing in for a call still in flight.
+        pending_details: Rc<RefCell<Vec<u64>>>,
+        posted: Rc<RefCell<Vec<DraftComment>>>,
+    }
+
+    impl FakeHost {
+        fn with_rows(count: u64) -> Self {
+            let repository = repository();
+            let summaries = (0..count)
+                .map(|index| PullRequestSummary {
+                    id: PullRequestId {
+                        number: index + 1,
+                        repository: repository.clone(),
+                    },
+                    title: format!("Pull request {}", index + 1),
+                    author: Identity {
+                        display_name: Some("Ada Lovelace".into()),
+                        nickname: Some("ada".into()),
+                        account_id: "712020:aaaa".into(),
+                        avatar_url: None,
+                    },
+                    state: PullRequestState::Open,
+                    is_draft: false,
+                    opened_at: fixed_clock(),
+                    // Descending, so the default sort keeps them in number order.
+                    last_activity_at: fixed_clock() - chrono::Duration::minutes(index as i64),
+                    web_url: None,
+                    comment_count: 0,
+                })
+                .collect();
+            Self {
+                summaries,
+                detail_calls: Rc::new(Cell::new(0)),
+                list_calls: Rc::new(Cell::new(0)),
+                pending_details: Rc::new(RefCell::new(Vec::new())),
+                posted: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn leaving_pending(self, numbers: &[u64]) -> Self {
+            *self.pending_details.borrow_mut() = numbers.to_vec();
+            self
+        }
+
+        fn leaving_every_detail_pending(self) -> Self {
+            let numbers: Vec<u64> = self.summaries.iter().map(|s| s.id.number).collect();
+            self.leaving_pending(&numbers)
+        }
+
+        fn detail_for(&self, id: &PullRequestId) -> PullRequestDetail {
+            let summary = self
+                .summaries
+                .iter()
+                .find(|summary| &summary.id == id)
+                .cloned()
+                .expect("the fake host is only asked about rows it listed");
+            let branch = |name: &str, revision: &str| BranchRef {
+                branch: name.into(),
+                revision: revision.into(),
+                repository: repository(),
+            };
+            PullRequestDetail {
+                description: Some(format!("Body of {}", summary.title)),
+                source: branch("feature", "aaaaaaaaaaaa"),
+                destination: branch("main", "bbbbbbbbbbbb"),
+                verdicts: vec![ReviewerVerdict {
+                    reviewer: Identity {
+                        display_name: Some("Grace Hopper".into()),
+                        ..Default::default()
+                    },
+                    verdict: Verdict::Approved,
+                    at: None,
+                }],
+                can_comment: true,
+                summary,
+            }
+        }
+    }
+
+    impl PullRequestHost for FakeHost {
+        fn list(
+            &self,
+            _repository: &RepositoryCoordinates,
+            _query: ListQuery,
+            cx: &App,
+        ) -> Task<Result<Vec<PullRequestSummary>, HostError>> {
+            self.list_calls.set(self.list_calls.get() + 1);
+            let summaries = self.summaries.clone();
+            cx.background_spawn(async move { Ok(summaries) })
+        }
+
+        fn detail(
+            &self,
+            id: &PullRequestId,
+            cx: &App,
+        ) -> Task<Result<PullRequestDetail, HostError>> {
+            self.detail_calls.set(self.detail_calls.get() + 1);
+            if self.pending_details.borrow().contains(&id.number) {
+                return cx.background_spawn(async move {
+                    futures::future::pending::<Result<PullRequestDetail, HostError>>().await
+                });
+            }
+            let detail = self.detail_for(id);
+            cx.background_spawn(async move { Ok(detail) })
+        }
+
+        fn changed_files(
+            &self,
+            _id: &PullRequestId,
+            cx: &App,
+        ) -> Task<Result<Vec<ChangedFile>, HostError>> {
+            cx.background_spawn(async move {
+                Ok(vec![ChangedFile {
+                    path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+                    previous_path: None,
+                    change_kind: ChangeKind::Modified,
+                    lines_added: 3,
+                    lines_removed: 1,
+                    render_refusal: None,
+                }])
+            })
+        }
+
+        fn comments(
+            &self,
+            _id: &PullRequestId,
+            cx: &App,
+        ) -> Task<Result<Vec<CommentThread>, HostError>> {
+            cx.background_spawn(async move { Ok(Vec::new()) })
+        }
+
+        fn post_comment(
+            &self,
+            _id: &PullRequestId,
+            draft: DraftComment,
+            cx: &App,
+        ) -> Task<Result<CommentThread, HostError>> {
+            self.posted.borrow_mut().push(draft.clone());
+            cx.background_spawn(async move {
+                Err(HostError::Unreachable {
+                    detail: "the fake host does not echo comments".into(),
+                })
+            })
+        }
+
+        fn viewer(&self, cx: &App) -> Task<Result<Identity, HostError>> {
+            cx.background_spawn(async move {
+                Ok(Identity {
+                    display_name: Some("Ada Lovelace".into()),
+                    nickname: Some("ada".into()),
+                    account_id: "712020:aaaa".into(),
+                    avatar_url: None,
+                })
+            })
+        }
+    }
+
+    fn repository() -> RepositoryCoordinates {
+        RepositoryCoordinates {
+            owner: "atlassian".into(),
+            name: "twg-cli".into(),
+        }
+    }
+
+    fn fixed_clock() -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 6, 12, 0, 0)
+            .single()
+            .expect("a valid fixed clock")
+    }
+
+    fn init_test(cx: &mut TestAppContext) {
+        zlog::init_test();
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            language_model::init(cx);
+            editor::init(cx);
+        });
+    }
+
+    /// Build a panel over a fake project, then give it a fake host.
+    ///
+    /// The panel's own coordinate resolution runs first and is allowed to settle: in a test build
+    /// executable resolution never searches a real `PATH`, so the real host resolves to a missing
+    /// prerequisite and reaches nothing.
+    async fn setup(
+        cx: &mut TestAppContext,
+        host: FakeHost,
+    ) -> (Entity<PullRequestPanel>, Rc<FakeHost>, VisualTestContext) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            serde_json::json!({ ".git": {}, "a.rs": "fn main() {}\n" }),
+        )
+        .await;
+        fs.set_remote_for_repo(
+            path!("/project/.git").as_ref(),
+            "origin",
+            "git@example.invalid:atlassian/twg-cli.git",
+        );
+
+        let project = project::Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = window
+            .read_with(cx, |multi, _| multi.workspace().clone())
+            .expect("the test workspace must exist");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
+            cx.new(|cx| PullRequestPanel::new(workspace, window, cx))
+        });
+        cx.executor().run_until_parked();
+
+        let host = Rc::new(host);
+        panel.update(&mut cx, |panel, cx| {
+            panel.replace_host_for_test(repository(), host.clone(), cx);
+        });
+        cx.executor().run_until_parked();
+
+        (panel, host, cx)
+    }
+
+    /// FR-012, SC-004: the list is readable while hydration is still in flight.
+    ///
+    /// Every `detail` call is left pending, so if the list waited on approvals there would be no
+    /// rows at all.
+    #[gpui::test]
+    async fn rows_render_before_approvals_arrive(cx: &mut TestAppContext) {
+        let (panel, host, cx) =
+            setup(cx, FakeHost::with_rows(3).leaving_every_detail_pending()).await;
+
+        panel.read_with(&cx, |panel, _cx| {
+            let rows = panel
+                .pull_requests()
+                .ready()
+                .expect("the rows must be readable before any approval arrives");
+            assert_eq!(rows.len(), 3);
+            for row in rows {
+                assert!(
+                    panel.verdicts_for(&row.id).is_none(),
+                    "no approvals can have arrived — every detail call is still pending"
+                );
+            }
+        });
+
+        assert!(
+            host.detail_calls.get() > 0,
+            "hydration must actually have started, or this test proves nothing"
+        );
+        assert_eq!(host.list_calls.get(), 1, "one list call renders every row");
+    }
+
+    /// Approvals fill in as they arrive, rather than all at once at the end.
+    #[gpui::test]
+    async fn approvals_fill_in_after_the_rows(cx: &mut TestAppContext) {
+        let (panel, host, cx) = setup(cx, FakeHost::with_rows(3)).await;
+
+        panel.read_with(&cx, |panel, _cx| {
+            let rows = panel.pull_requests().ready().expect("rows must be listed");
+            assert_eq!(rows.len(), 3);
+            for row in rows {
+                let verdicts = panel
+                    .verdicts_for(&row.id)
+                    .expect("every row's approvals should have arrived by now");
+                assert_eq!(verdicts.len(), 1);
+                assert_eq!(verdicts[0].verdict, Verdict::Approved);
+            }
+        });
+        assert_eq!(host.detail_calls.get(), 3, "one approval call per row");
+    }
+
+    /// FR-012, FR-067, SC-004: the first rows are produced without loading every pull request's
+    /// approvals.
+    ///
+    /// The bound is what matters and what is observable. The frame-budget half of SC-004 is a
+    /// timing property measured against a real host in T112, not something a deterministic
+    /// executor can tell us.
+    #[gpui::test]
+    async fn a_five_hundred_row_list_does_not_make_five_hundred_approval_calls(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, host, cx) =
+            setup(cx, FakeHost::with_rows(500).leaving_every_detail_pending()).await;
+
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(
+                panel.pull_requests().ready().map(Vec::len),
+                Some(500),
+                "every row is listed from the one list call"
+            );
+        });
+
+        assert!(
+            host.detail_calls.get() <= HYDRATION_WINDOW,
+            "hydration must stay bounded: {} calls for 500 rows",
+            host.detail_calls.get()
+        );
+        assert!(
+            host.detail_calls.get() <= HYDRATION_CONCURRENCY,
+            "with every call pending, only the first batch can have been issued: {} calls",
+            host.detail_calls.get()
+        );
+    }
+
+    /// FR-026, FR-069: a superseded detail load cannot arrive later and replace the newer
+    /// selection.
+    ///
+    /// Pull request 1's `detail` never resolves. Selecting 2 drops that task — which is what
+    /// cancels the underlying work rather than merely discarding its result — so 1's result cannot
+    /// arrive at all, and the panel shows 2.
+    #[gpui::test]
+    async fn a_superseded_detail_load_cannot_replace_the_newer_selection(cx: &mut TestAppContext) {
+        let (panel, _host, mut cx) = setup(cx, FakeHost::with_rows(2).leaving_pending(&[1])).await;
+
+        let id = |number: u64| PullRequestId {
+            number,
+            repository: repository(),
+        };
+
+        panel.update(&mut cx, |panel, cx| panel.select(id(1), cx));
+        cx.executor().run_until_parked();
+        panel.read_with(&cx, |panel, _cx| {
+            assert!(
+                panel.detail().is_loading(),
+                "pull request 1's detail is still in flight"
+            );
+        });
+
+        panel.update(&mut cx, |panel, cx| panel.select(id(2), cx));
+        cx.executor().run_until_parked();
+
+        panel.read_with(&cx, |panel, _cx| {
+            let detail = panel
+                .detail()
+                .ready()
+                .expect("the newer selection's detail must be shown");
+            assert_eq!(detail.summary.id, id(2));
+            assert_eq!(panel.selected(), Some(&id(2)));
+        });
+
+        // Nothing can change that afterwards: the older task no longer exists to complete.
+        cx.executor().run_until_parked();
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(
+                panel
+                    .detail()
+                    .ready()
+                    .map(|detail| detail.summary.id.clone()),
+                Some(id(2)),
+                "the abandoned load must never arrive"
+            );
+        });
+    }
+
+    /// FR-025, US2 scenario 7: each tab has its own load state, so switching reloads nothing.
+    #[gpui::test]
+    async fn switching_tabs_reloads_nothing(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        let id = PullRequestId {
+            number: 1,
+            repository: repository(),
+        };
+
+        panel.update(&mut cx, |panel, cx| panel.select(id.clone(), cx));
+        cx.executor().run_until_parked();
+
+        let details_after_select = host.detail_calls.get();
+
+        panel.update(&mut cx, |panel, cx| {
+            panel.set_active_tab(DetailTab::Files, cx)
+        });
+        cx.executor().run_until_parked();
+        panel.read_with(&cx, |panel, _cx| {
+            assert!(
+                panel.changed_files().ready().is_some(),
+                "the Files tab loads on first view"
+            );
+            assert!(
+                panel.detail().ready().is_some(),
+                "the Overview tab keeps its state while Files is shown"
+            );
+        });
+
+        panel.update(&mut cx, |panel, cx| {
+            panel.set_active_tab(DetailTab::Overview, cx)
+        });
+        panel.update(&mut cx, |panel, cx| {
+            panel.set_active_tab(DetailTab::Files, cx)
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            host.detail_calls.get(),
+            details_after_select,
+            "switching between tabs must not reload the pull request"
+        );
+    }
+
+    /// FR-011, US5 scenario 8: a selection that is still listed survives a refresh.
+    #[gpui::test]
+    async fn a_refresh_keeps_the_selection_and_reports_one_that_vanished(cx: &mut TestAppContext) {
+        let (panel, _host, mut cx) = setup(cx, FakeHost::with_rows(3)).await;
+        let id = |number: u64| PullRequestId {
+            number,
+            repository: repository(),
+        };
+
+        panel.update(&mut cx, |panel, cx| panel.select(id(2), cx));
+        cx.executor().run_until_parked();
+
+        panel.update(&mut cx, |panel, cx| panel.refresh(cx));
+        cx.executor().run_until_parked();
+
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(panel.selected(), Some(&id(2)), "the selection survives");
+            assert_eq!(
+                panel.vanished_selection(),
+                None,
+                "nothing vanished, so nothing is reported"
+            );
+        });
+
+        // Now the host stops listing it. The reviewer must be told, not silently deselected.
+        panel.update(&mut cx, |panel, cx| {
+            panel.replace_host_for_test(repository(), Rc::new(FakeHost::with_rows(1)), cx);
+            panel.select(id(1), cx);
+        });
+        cx.executor().run_until_parked();
+        panel.update(&mut cx, |panel, cx| {
+            panel.selected = Some(id(99));
+            panel.load_list(cx);
+        });
+        cx.executor().run_until_parked();
+
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(
+                panel.vanished_selection(),
+                Some(99),
+                "a selected pull request that is no longer listed must be reported"
+            );
+        });
+    }
+
+    /// FR-021, FR-002a: the dock position round-trips through the key-value store rather than
+    /// through user settings or a feature-owned file.
+    #[gpui::test]
+    async fn the_dock_position_persists_without_touching_settings(cx: &mut TestAppContext) {
+        let (panel, _host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            assert!(panel.position_is_valid(DockPosition::Bottom));
+            panel.set_position(DockPosition::Bottom, window, cx);
+        });
+
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(
+                panel.view_state().dock_position,
+                Some(PersistedDockPosition::Bottom)
+            );
+        });
+
+        // The write is debounced, so let it settle and confirm it landed in the store.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.executor().run_until_parked();
+
+        let stored = panel.read_with(&cx, |panel, cx| {
+            crate::state::load(&panel.worktree_identity, cx)
+        });
+        assert_eq!(
+            stored.dock_position,
+            Some(PersistedDockPosition::Bottom),
+            "the position must be readable back after a restart"
+        );
+    }
+
     /// FR-012 / SC-004: the panel must be able to render rows it has no verdicts for. This asserts
     /// the shape that makes the two-phase load possible — a row and its bubbles are separate pieces
     /// of state — rather than waiting on a host.

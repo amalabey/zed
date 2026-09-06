@@ -215,6 +215,12 @@ fn decode_git_text(bytes: Vec<u8>) -> Result<String> {
     Ok(decode_text(bytes)?.text)
 }
 
+/// Why [`Repository::load_blob_contents`] refuses on a remote project.
+///
+/// Named so callers can recognise the condition and report it, rather than matching on prose.
+pub const LOAD_BLOB_CONTENTS_UNSUPPORTED: &str =
+    "loading blob contents is not supported for remote projects";
+
 #[derive(Debug)]
 pub struct CommitDiff {
     pub files: Vec<CommitFile>,
@@ -9675,9 +9681,7 @@ impl Repository {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
                     backend.load_revisions(specifiers).await
                 }
-                RepositoryState::Remote(_) => {
-                    anyhow::bail!("loading blob contents is not supported for remote projects")
-                }
+                RepositoryState::Remote(_) => anyhow::bail!("{LOAD_BLOB_CONTENTS_UNSUPPORTED}"),
             }
         })
     }
@@ -11636,6 +11640,74 @@ mod tests {
             &format!("https://github.com/zed-industries/zed/blob/{sha}/src/main.rs")
         );
         assert!(permalink.fragment().is_none());
+    }
+
+    #[gpui::test]
+    async fn test_load_blob_contents(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new("/project"),
+            json!({
+                ".git": {},
+                "src": { "main.rs": "fn main() {}\n" },
+            }),
+        )
+        .await;
+
+        let sha = "e6ebe7974deb6bb6cc0e2595c8ec31f0c71084b7";
+        fs.set_head_for_repo(
+            Path::new("/project/.git"),
+            &[("src/main.rs", "fn main() {}\n".into())],
+            sha,
+        );
+
+        let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let repository = project
+            .read_with(cx, |project, cx| project.active_repository(cx))
+            .expect("the fake project has a repository");
+
+        let contents = repository
+            .update(cx, |repository, _cx| {
+                repository.load_blob_contents(vec![
+                    format!("{sha}:src/main.rs"),
+                    format!("{sha}:src/absent.rs"),
+                ])
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(contents.len(), 2, "one entry per specifier, in order");
+        assert_eq!(
+            contents[0].as_deref().map(String::from_utf8_lossy),
+            Some("fn main() {}\n".into())
+        );
+        // A path the revision does not contain is a normal result, not a failure: a file added by
+        // one revision has no content in another.
+        assert_eq!(contents[1], None);
+
+        let empty = repository
+            .update(cx, |repository, _cx| {
+                repository.load_blob_contents(Vec::new())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    /// The remote arm's stated reason. Constructing a `RepositoryState::Remote` needs the collab
+    /// harness, so the refusal is pinned through the constant the arm returns — which is also what
+    /// makes the condition recognisable to callers instead of prose they have to match on.
+    #[test]
+    fn test_load_blob_contents_states_why_remote_is_unsupported() {
+        assert!(LOAD_BLOB_CONTENTS_UNSUPPORTED.contains("not supported"));
+        assert!(LOAD_BLOB_CONTENTS_UNSUPPORTED.contains("remote"));
     }
 
     #[gpui::test]

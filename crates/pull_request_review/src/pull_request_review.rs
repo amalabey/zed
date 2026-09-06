@@ -86,15 +86,19 @@ pub(crate) fn default_host(
 /// The default number of pull requests one list call asks for.
 pub(crate) const DEFAULT_LIST_LIMIT: usize = host_twg::DEFAULT_LIST_LIMIT;
 
-/// The part of a source file that ships, with its `#[cfg(test)]` module removed.
+/// The part of a source file that ships, with its trailing test module removed.
 ///
 /// Several checks in this crate assert a property of the code by reading it. Every one of them is
 /// about what the feature *does*, so every one of them must ignore the tests — which name the very
 /// things they forbid, in order to forbid them.
+///
+/// The split is on the test *module* rather than on `#[cfg(test)]`, because a file may also carry
+/// an inline `#[cfg(test)]` item — a test-only seam, say — and splitting there would silently stop
+/// scanning the rest of the file. A check that quietly stops looking is worse than no check.
 #[cfg(test)]
 pub(crate) fn production_source(source: &str) -> &str {
     source
-        .split_once("#[cfg(test)]")
+        .split_once("\n#[cfg(test)]\nmod tests {")
         .map(|(production, _)| production)
         .unwrap_or(source)
 }

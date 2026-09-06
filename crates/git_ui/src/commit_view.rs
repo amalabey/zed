@@ -1534,3 +1534,235 @@ fn stash_matches_index(sha: &str, stash_index: usize, repo: &Repository) -> bool
         .map(|entry| entry.oid.to_string() == sha)
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use project::git_store::CommitFile;
+    use serde_json::json;
+    use settings::SettingsStore;
+    use util::rel_path::rel_path;
+
+    fn init_test(cx: &mut TestAppContext) {
+        zlog::init_test();
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            language_model::init(cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+    }
+
+    fn commit_file(
+        path: &str,
+        old_text: Option<&str>,
+        new_text: Option<&str>,
+        is_binary: bool,
+    ) -> CommitFile {
+        CommitFile {
+            path: RepoPath::from_rel_path(rel_path(path)),
+            old_text: old_text.map(str::to_owned),
+            new_text: new_text.map(str::to_owned),
+            is_binary,
+        }
+    }
+
+    /// Open a synthesised commit through `CommitView::new` and return the view.
+    ///
+    /// This is the exact entry point `pull_request_review` reuses, which is what makes this test
+    /// the tripwire FR-082 asks for: if upstream changes how `new` reads a `CommitDiff`, this fails
+    /// loudly rather than the pull request diff silently degrading.
+    async fn open_synthesised_commit(
+        cx: &mut TestAppContext,
+        files: Vec<CommitFile>,
+        is_shallow_boundary: bool,
+    ) -> (Entity<CommitView>, VisualTestContext) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            std::path::Path::new("/project"),
+            json!({ ".git": {}, "a.rs": "fn main() {}\n" }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [std::path::Path::new("/project")], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let repository = project
+            .read_with(cx, |project, cx| project.active_repository(cx))
+            .expect("the fake project has a repository");
+
+        let window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = window
+            .read_with(cx, |multi, _| multi.workspace().clone())
+            .expect("the test workspace must exist");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.executor().run_until_parked();
+
+        let commit = CommitDetails {
+            sha: "e6ebe7974deb6bb6cc0e2595c8ec31f0c71084b7".into(),
+            message: "Add history view to the git panel".into(),
+            commit_timestamp: 0,
+            author_email: "ada@example.invalid".into(),
+            author_name: "Ada Lovelace".into(),
+        };
+        let commit_diff = CommitDiff {
+            files,
+            is_shallow_boundary,
+        };
+
+        let view = workspace.update_in(&mut cx, |workspace, window, cx| {
+            let workspace_entity = cx.entity();
+            let workspace_handle = cx.weak_entity();
+            cx.new(|cx| {
+                CommitView::new(
+                    commit,
+                    commit_diff,
+                    repository,
+                    project.clone(),
+                    workspace_entity,
+                    workspace_handle,
+                    None,
+                    None,
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.executor().run_until_parked();
+
+        (view, cx)
+    }
+
+    fn multibuffer_text(view: &Entity<CommitView>, cx: &mut VisualTestContext) -> String {
+        view.read_with(cx, |view, cx| view.multibuffer.read(cx).snapshot(cx).text())
+    }
+
+    /// FR-081, SC-021: the commit-diff view must keep behaving the same for every change kind, so
+    /// that reusing it for pull request review cannot silently degrade either surface.
+    #[gpui::test]
+    async fn commit_view_shows_an_added_file_wholly_added(cx: &mut TestAppContext) {
+        let (view, mut cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file(
+                "added.rs",
+                None,
+                Some("fn added() {}\n"),
+                false,
+            )],
+            false,
+        )
+        .await;
+
+        assert!(
+            multibuffer_text(&view, &mut cx).contains("fn added() {}"),
+            "an added file's content must be present"
+        );
+        view.read_with(&cx, |view, _cx| {
+            assert!(!view.is_shallow_boundary);
+        });
+    }
+
+    #[gpui::test]
+    async fn commit_view_shows_a_modified_file(cx: &mut TestAppContext) {
+        let (view, mut cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file(
+                "modified.rs",
+                Some("fn before() {}\n"),
+                Some("fn after() {}\n"),
+                false,
+            )],
+            false,
+        )
+        .await;
+
+        let text = multibuffer_text(&view, &mut cx);
+        assert!(text.contains("fn after() {}"), "the new side is the buffer");
+    }
+
+    #[gpui::test]
+    async fn commit_view_shows_a_deleted_file_wholly_removed(cx: &mut TestAppContext) {
+        let (view, mut cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file("gone.rs", Some("fn gone() {}\n"), None, false)],
+            false,
+        )
+        .await;
+
+        // A deleted file has no new side, so the buffer itself is empty and the removal shows as
+        // diff. What matters is that this is not an error and not a missing file.
+        assert!(
+            !multibuffer_text(&view, &mut cx).contains("fn gone() {}"),
+            "the deleted content is not part of the new side"
+        );
+        view.read_with(&cx, |view, cx| {
+            assert_eq!(
+                view.multibuffer.read(cx).all_buffers().len(),
+                1,
+                "the file is still present in the diff, as a deletion"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn commit_view_substitutes_a_placeholder_for_a_binary_file(cx: &mut TestAppContext) {
+        let (view, mut cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file(
+                "logo.png",
+                Some("\u{0}old"),
+                Some("\u{0}new"),
+                true,
+            )],
+            false,
+        )
+        .await;
+
+        let text = multibuffer_text(&view, &mut cx);
+        assert!(
+            text.contains("binary file not shown"),
+            "a binary file must be reported, never rendered as bytes: {text:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn commit_view_reports_a_shallow_boundary(cx: &mut TestAppContext) {
+        let (view, cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file("a.rs", None, Some("fn a() {}\n"), false)],
+            true,
+        )
+        .await;
+
+        view.read_with(&cx, |view, _cx| {
+            assert!(
+                view.is_shallow_boundary,
+                "a shallow-boundary commit must still be flagged as one"
+            );
+        });
+    }
+
+    /// The accessor added for `pull_request_review` must expose the same editor the view renders,
+    /// so a decoration applied through it lands on the diff the reviewer is reading.
+    #[gpui::test]
+    async fn the_editor_accessor_returns_the_views_own_editor(cx: &mut TestAppContext) {
+        let (view, cx) = open_synthesised_commit(
+            cx,
+            vec![commit_file("a.rs", None, Some("fn a() {}\n"), false)],
+            false,
+        )
+        .await;
+
+        view.read_with(&cx, |view, _cx| {
+            assert_eq!(view.editor().entity_id(), view.editor.entity_id());
+        });
+    }
+}

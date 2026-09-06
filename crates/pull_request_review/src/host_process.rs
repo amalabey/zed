@@ -154,18 +154,36 @@ fn locate_executable(
         });
     }
 
-    let search_path = path_variable.filter(|value| !value.is_empty());
-    let located = match search_path {
-        Some(search_path) => which::which_in(program, Some(search_path), ".").ok(),
-        None => which::which(program).ok(),
-    };
+    // The suite must need no network and no host access (quickstart.md). Searching a real `PATH` in
+    // a test build would let a developer's own installed tool be found and invoked for real, which
+    // would make the tests depend on their machine and on the host being reachable. Making that
+    // impossible in code is worth more than remembering not to do it.
+    #[cfg(test)]
+    {
+        let _ = path_variable;
+        return Err(HostError::PrerequisiteMissing {
+            detail: format!(
+                "`{program}` is never searched for in a test build; set \
+                 {EXECUTABLE_OVERRIDE_VAR} to exercise a real executable"
+            ),
+        });
+    }
 
-    located.ok_or_else(|| HostError::PrerequisiteMissing {
-        detail: match search_path {
-            Some(_) => format!("`{program}` wasn't found on this project's PATH"),
-            None => format!("`{program}` wasn't found on PATH"),
-        },
-    })
+    #[cfg(not(test))]
+    {
+        let search_path = path_variable.filter(|value| !value.is_empty());
+        let located = match search_path {
+            Some(search_path) => which::which_in(program, Some(search_path), ".").ok(),
+            None => which::which(program).ok(),
+        };
+
+        located.ok_or_else(|| HostError::PrerequisiteMissing {
+            detail: match search_path {
+                Some(_) => format!("`{program}` wasn't found on this project's PATH"),
+                None => format!("`{program}` wasn't found on PATH"),
+            },
+        })
+    }
 }
 
 async fn run_resolved(
@@ -316,6 +334,15 @@ mod tests {
         assert_eq!(output.stderr, "err");
         assert_eq!(output.exit_code, Some(3));
         assert!(!output.succeeded());
+    }
+
+    /// Resolution in a test build never searches a real `PATH`, so the suite cannot reach a host.
+    #[test]
+    fn a_test_build_never_finds_a_real_executable_on_the_path() {
+        // `sh` exists on every machine this runs on, so if PATH were searched this would resolve.
+        let error = locate_executable("sh", None, Some("/bin:/usr/bin"))
+            .expect_err("a test build must not search PATH");
+        assert!(matches!(error, HostError::PrerequisiteMissing { .. }));
     }
 
     #[test]

@@ -117,9 +117,9 @@ indicator, title, author, approver bubbles and a relative age.
 - [X] T033 [US1] Implement the two-phase load in `crates/pull_request_review/src/panel.rs`: render every row from one `list` call, then hydrate approvals with one `detail` call per **visible** row at bounded concurrency, filling bubbles in as they arrive (FR-007, FR-012, SC-004, research.md §2)
 - [X] T034 [US1] Show the loading state, and report each `HostError` variant as its own actionable message with a retry in `crates/pull_request_review/src/panel.rs` — no modal, no focus theft, the rest of Zed unaffected (FR-064, FR-071, FR-073)
 - [X] T035 [US1] Implement refresh in `crates/pull_request_review/src/panel.rs` preserving selection, filters and sort, and reporting a selected pull request that has disappeared rather than silently deselecting it (FR-011, spec list-changed edge case)
-- [ ] T036 [P] [US1] Test with `#[gpui::test]` and `run_until_parked()` in `crates/pull_request_review/src/panel.rs` that rows render before approvals arrive, so the list is readable while hydration is still in flight (FR-012)
+- [X] T036 [P] [US1] Test with `#[gpui::test]` and `run_until_parked()` in `crates/pull_request_review/src/panel.rs` that rows render before approvals arrive, so the list is readable while hydration is still in flight (FR-012)
 - [X] T037 [P] [US1] Test in `crates/pull_request_review/src/host_twg.rs` that the default state filter lists only open and draft pull requests from the multi-state fixture (US1 acceptance scenario 2, FR-013)
-- [ ] T038 [P] [US1] Test in `crates/pull_request_review/src/panel.rs` against the 500-row fixture that the first rows are produced without loading every pull request's approvals, and that no foreground entity update exceeds one frame budget (FR-012, FR-067, SC-004)
+- [X] T038 [P] [US1] Test in `crates/pull_request_review/src/panel.rs` against the 500-row fixture that the first rows are produced without loading every pull request's approvals, and that no foreground entity update exceeds one frame budget (FR-012, FR-067, SC-004)
 
 **Checkpoint**: User Story 1 is fully functional. A reviewer who only reads this list already gets "what is
 waiting for me" without leaving Zed.
@@ -148,7 +148,7 @@ and Files lists all twelve files with the correct change kind and line counts.
 - [X] T048 [US2] Report a file-list failure with its reason and a retry in `crates/pull_request_review/src/files.rs`, leaving the Overview tab readable (FR-031)
 - [X] T049 [US2] Give each tab its own load state in `crates/pull_request_review/src/panel.rs`, so switching between Overview and Files reloads nothing and loses no state while the other tab and the list stay usable (FR-025, US2 acceptance scenario 7)
 - [X] T050 [US2] Abandon a superseded detail load when the reviewer selects a different pull request, in `crates/pull_request_review/src/panel.rs` — cancelling the underlying work, not merely discarding its result (FR-026, FR-069)
-- [ ] T051 [P] [US2] Test with `#[gpui::test]` in `crates/pull_request_review/src/panel.rs` that a superseded detail load cannot arrive later and replace the newer selection (FR-026)
+- [X] T051 [P] [US2] Test with `#[gpui::test]` in `crates/pull_request_review/src/panel.rs` that a superseded detail load cannot arrive later and replace the newer selection (FR-026)
 - [X] T052 [P] [US2] Test in `crates/pull_request_review/src/host_twg.rs` that the diffstat fixture covering added, modified, removed and renamed maps to the expected `ChangedFile` rows, including `previous_path` on the rename (FR-027, FR-028)
 
 **Checkpoint**: User Stories 1 and 2 together are a complete read-only review surface — everything a
@@ -173,9 +173,9 @@ Both are strictly additive per FR-075 and both are enumerated in
 [contracts/zed-surface.md](./contracts/zed-surface.md). `script/check-fork-surface` must pass after each.
 
 - [X] T053 [US3] Add one `pub fn` to `crates/project/src/git_store.rs` loading blob content for a list of `<revision>:<path>` specifiers, returning an explicit "not supported for remote projects" error otherwise — one new method appended to an existing `impl`, nothing else changed (FR-077, allowlist entry 5, research.md §3)
-- [ ] T054 [P] [US3] Test the added blob loader in `crates/project`: content returned for a local repository, and the stated unsupported error for a remote one (FR-077, research.md §3)
+- [X] T054 [P] [US3] Test the added blob loader in `crates/project`: content returned for a local repository, and the stated unsupported error for a remote one (FR-077, research.md §3)
 - [X] T055 [US3] Make `CommitView::new` `pub` and add one `pub fn` accessor returning the view's `SplittableEditor` in `crates/git_ui/src/commit_view.rs` — one visibility keyword and one new method, no signature change, no moved item, no reformatting, `GitBlob` left private (FR-075, FR-080, FR-082, allowlist entry 4, research.md §5)
-- [ ] T056 [P] [US3] Test in `crates/git_ui` that opening an ordinary commit in the commit-diff view behaves identically for an added, a modified, a deleted and a binary file, and for a shallow-boundary commit (FR-081, SC-021)
+- [X] T056 [P] [US3] Test in `crates/git_ui` that opening an ordinary commit in the commit-diff view behaves identically for an added, a modified, a deleted and a binary file, and for a shallow-boundary commit (FR-081, SC-021)
 
 ### The changeset implementation
 
@@ -195,10 +195,10 @@ Both are strictly additive per FR-075 and both are enumerated in
 
 ### Tests for User Story 3
 
-- [ ] T067 [P] [US3] Test in `crates/pull_request_review/src/changeset_pull_request.rs` that the base is the divergence point: on a fixture whose destination branch has advanced by at least ten commits, the files listed and the lines shown contain none of the destination's later changes (FR-034, SC-009)
-- [ ] T068 [P] [US3] Test in `crates/pull_request_review/src/diff.rs` the reused path required by FR-082: the feature's `CommitView` construction produces the expected multibuffer for added, modified, deleted and binary files, so an upstream change to that file fails loudly rather than silently degrading review (FR-082)
-- [ ] T069 [P] [US3] Test in `crates/pull_request_review/src/changeset_pull_request.rs` that reading a pull request's diff leaves the branch, index, working tree and stash unchanged and creates no worktree (FR-035, SC-002)
-- [ ] T070 [P] [US3] Test with `#[gpui::test]` in `crates/pull_request_review/src/diff.rs` that cancelling an in-flight diff stops the blob load and the revision fetch rather than only discarding the result, and that a missing revision or unreadable blob cannot panic (FR-069, SC-016)
+- [X] T067 [P] [US3] Test in `crates/pull_request_review/src/changeset_pull_request.rs` that the base is the divergence point: on a fixture whose destination branch has advanced by at least ten commits, the files listed and the lines shown contain none of the destination's later changes (FR-034, SC-009)
+- [X] T068 [P] [US3] Test in `crates/pull_request_review/src/diff.rs` the reused path required by FR-082: the feature's `CommitView` construction produces the expected multibuffer for added, modified, deleted and binary files, so an upstream change to that file fails loudly rather than silently degrading review (FR-082)
+- [X] T069 [P] [US3] Test in `crates/pull_request_review/src/changeset_pull_request.rs` that reading a pull request's diff leaves the branch, index, working tree and stash unchanged and creates no worktree (FR-035, SC-002)
+- [X] T070 [P] [US3] Test with `#[gpui::test]` in `crates/pull_request_review/src/diff.rs` that cancelling an in-flight diff stops the blob load and the revision fetch rather than only discarding the result, and that a missing revision or unreadable blob cannot panic (FR-069, SC-016)
 
 **Checkpoint**: All three P1 stories are complete. This is the point of the feature — reading a colleague's
 pull request end to end without a browser.

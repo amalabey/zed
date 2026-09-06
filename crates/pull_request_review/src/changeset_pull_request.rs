@@ -461,6 +461,259 @@ fn decode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git::repository::{GitRepository as _, RealGitRepository};
+    use gpui::TestAppContext;
+
+    /// A throwaway git repository, driven by the real `git` binary.
+    ///
+    /// FR-034 is a property of git's `--merge-base`, and the fake repository's `diff_tree` ignores
+    /// its base and head arguments entirely — it always compares one fixed pair of trees. So a
+    /// fake cannot distinguish a merge-base diff from a two-dot diff, and cannot tell us whether
+    /// the reviewer would see the destination branch's later commits. Only real git can.
+    struct TempRepo {
+        directory: std::path::PathBuf,
+    }
+
+    impl TempRepo {
+        fn new(name: &str) -> Self {
+            let directory = std::env::temp_dir()
+                .join(format!("pull-request-review-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).expect("a writable temp directory");
+            let repo = Self { directory };
+            repo.git(&["init", "--initial-branch=main"]);
+            repo.git(&["config", "user.email", "test@example.invalid"]);
+            repo.git(&["config", "user.name", "Test"]);
+            repo.git(&["config", "commit.gpgsign", "false"]);
+            repo
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&self.directory)
+                .output()
+                .expect("git should be runnable");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+
+        fn write(&self, path: &str, contents: &str) {
+            std::fs::write(self.directory.join(path), contents).expect("a writable file");
+        }
+
+        fn commit(&self, path: &str, contents: &str, message: &str) -> String {
+            self.write(path, contents);
+            self.git(&["add", path]);
+            self.git(&["commit", "-m", message]);
+            self.git(&["rev-parse", "HEAD"])
+        }
+
+        fn open(&self, cx: &TestAppContext) -> RealGitRepository {
+            RealGitRepository::new(
+                &self.directory.join(".git"),
+                None,
+                Some(std::path::PathBuf::from("git")),
+                cx.executor(),
+            )
+            .expect("the temp repository should open")
+        }
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    /// FR-034, SC-009: the base is the divergence point.
+    ///
+    /// This is the single most important correctness property in the feature. A destination branch
+    /// that has moved on since the pull request was raised must contribute *nothing* — not a file,
+    /// not a line. Getting it wrong shows the reviewer a plausible diff of the wrong change, which
+    /// they have no way to detect.
+    #[gpui::test]
+    async fn the_base_is_the_divergence_point_not_the_destination_tip(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let repo = TempRepo::new("merge-base");
+        repo.commit("shared.rs", "fn shared() {}\n", "Shared history");
+
+        // The pull request's branch: one file, one change.
+        repo.git(&["checkout", "-b", "feature"]);
+        let head = repo.commit("proposed.rs", "fn proposed() {}\n", "What the PR proposes");
+
+        // Meanwhile the destination advances by twelve commits, none of them the PR's.
+        repo.git(&["checkout", "main"]);
+        for index in 0..12 {
+            repo.commit(
+                &format!("later{index}.rs"),
+                &format!("fn later{index}() {{}}\n"),
+                &format!("Landed after the PR was raised {index}"),
+            );
+        }
+        let destination_tip = repo.git(&["rev-parse", "HEAD"]);
+
+        let repository = repo.open(cx);
+
+        let merge_base_diff = repository
+            .diff_tree(DiffTreeType::MergeBase {
+                base: destination_tip.clone().into(),
+                head: head.clone().into(),
+            })
+            .await
+            .expect("the merge-base diff should be computable");
+
+        let listed: Vec<String> = merge_base_diff
+            .entries
+            .keys()
+            .map(|path| path.as_unix_str().to_string())
+            .collect();
+
+        assert_eq!(
+            listed,
+            vec!["proposed.rs".to_string()],
+            "only what the pull request proposes may be listed, but got {listed:?}"
+        );
+        for index in 0..12 {
+            assert!(
+                !listed.contains(&format!("later{index}.rs")),
+                "the destination branch's later change later{index}.rs leaked into the review"
+            );
+        }
+
+        // And the contrast that makes the assertion meaningful: a two-dot comparison of the same
+        // two revisions *does* drag the destination's later commits in. This is the bug the
+        // merge-base requirement exists to prevent, demonstrated rather than asserted.
+        let two_dot = repository
+            .diff_tree(DiffTreeType::Since {
+                base: destination_tip.into(),
+                head: head.into(),
+            })
+            .await
+            .expect("the two-dot diff should be computable");
+        assert!(
+            two_dot.entries.len() > merge_base_diff.entries.len(),
+            "if these agree, this test is not exercising the difference it claims to"
+        );
+    }
+
+    /// FR-035, SC-002: reading a pull request's diff leaves the repository exactly as it was.
+    ///
+    /// Fetching objects is permitted; changing what the reviewer has checked out is not. This drives
+    /// real git so that "unchanged" means what a reviewer would mean by it — branch, index, working
+    /// tree, stash and worktree list.
+    #[gpui::test]
+    async fn reading_a_diff_leaves_the_repository_untouched(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let repo = TempRepo::new("untouched");
+        repo.commit("a.rs", "fn a() {}\n", "First");
+        repo.git(&["checkout", "-b", "feature"]);
+        let head = repo.commit("b.rs", "fn b() {}\n", "Second");
+        repo.git(&["checkout", "main"]);
+        let base = repo.git(&["rev-parse", "HEAD"]);
+
+        // The reviewer's own uncommitted work, which must survive untouched.
+        repo.write("a.rs", "fn a() { /* mine, uncommitted */ }\n");
+        repo.write("untracked.rs", "fn untracked() {}\n");
+
+        let before = (
+            repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            repo.git(&["status", "--porcelain"]),
+            repo.git(&["stash", "list"]),
+            repo.git(&["worktree", "list"]),
+            repo.git(&["rev-parse", "HEAD"]),
+        );
+
+        let repository = repo.open(cx);
+
+        // Everything the changeset does to produce a diff: the presence checks, the merge-base
+        // tree diff, and the blob loads for both sides.
+        for revision in [&base, &head] {
+            repository
+                .diff_tree(DiffTreeType::Since {
+                    base: revision.clone().into(),
+                    head: revision.clone().into(),
+                })
+                .await
+                .expect("the presence check should succeed");
+        }
+        let tree = repository
+            .diff_tree(DiffTreeType::MergeBase {
+                base: base.clone().into(),
+                head: head.clone().into(),
+            })
+            .await
+            .expect("the merge-base diff should be computable");
+        let specifiers: Vec<String> = tree
+            .entries
+            .keys()
+            .flat_map(|path| {
+                [
+                    format!("{base}:{}", path.as_unix_str()),
+                    format!("{head}:{}", path.as_unix_str()),
+                ]
+            })
+            .collect();
+        repository
+            .load_revisions(specifiers)
+            .await
+            .expect("the blobs should load");
+
+        let after = (
+            repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            repo.git(&["status", "--porcelain"]),
+            repo.git(&["stash", "list"]),
+            repo.git(&["worktree", "list"]),
+            repo.git(&["rev-parse", "HEAD"]),
+        );
+
+        assert_eq!(before.0, after.0, "the branch must not change");
+        assert_eq!(
+            before.1, after.1,
+            "the index and working tree must be untouched, including uncommitted work"
+        );
+        assert_eq!(before.2, after.2, "the stash must not be touched");
+        assert_eq!(before.3, after.3, "no worktree may be created");
+        assert_eq!(before.4, after.4, "HEAD must not move");
+    }
+
+    /// The missing-ref edge case: named, and never a panic.
+    #[gpui::test]
+    async fn an_unresolvable_revision_is_reported_by_name(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let repo = TempRepo::new("missing-ref");
+        repo.commit("a.rs", "fn a() {}\n", "First");
+        let repository = repo.open(cx);
+
+        let absent = "0123456789abcdef0123456789abcdef01234567";
+        let result = repository
+            .diff_tree(DiffTreeType::Since {
+                base: absent.into(),
+                head: absent.into(),
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "a revision the repository does not have must not silently produce an empty diff"
+        );
+
+        let reason = missing_revision_reason(absent);
+        assert!(
+            reason.contains(absent),
+            "the reason must name the ref: {reason}"
+        );
+
+        // And a blob load for a missing revision is a `None` entry, not a panic.
+        let blobs = repository
+            .load_revisions(vec![format!("{absent}:a.rs")])
+            .await
+            .expect("a missing revision is a normal result");
+        assert_eq!(blobs, vec![None]);
+    }
 
     /// FR-034, SC-009: the base must be the divergence point, not the destination tip.
     ///

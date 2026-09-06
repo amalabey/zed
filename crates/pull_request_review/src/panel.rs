@@ -113,6 +113,12 @@ pub struct PullRequestPanel {
     selected: Option<PullRequestId>,
     active_tab: DetailTab,
     detail: Load<PullRequestDetail>,
+    /// The description's rendered markdown, built once when the detail arrives.
+    ///
+    /// Held here rather than built during render: building it needs the project's language
+    /// registry, and reaching that from inside the panel's own `render` means reading the panel
+    /// entity while it is already being updated, which GPUI panics on.
+    description_markdown: Option<Entity<markdown::Markdown>>,
     changed_files: Load<Vec<ChangedFile>>,
 
     viewer: Option<Identity>,
@@ -238,6 +244,7 @@ impl PullRequestPanel {
             selected: None,
             active_tab: DetailTab::Overview,
             detail: Load::Idle,
+            description_markdown: None,
             changed_files: Load::Idle,
             viewer: None,
             diff_item_id: None,
@@ -283,6 +290,21 @@ impl PullRequestPanel {
 
     pub fn detail(&self) -> &Load<PullRequestDetail> {
         &self.detail
+    }
+
+    pub fn description_markdown(&self) -> Option<&Entity<markdown::Markdown>> {
+        self.description_markdown.as_ref()
+    }
+
+    /// Build the description's markdown entity, once, off the render path.
+    fn build_description_markdown(
+        &self,
+        description: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<markdown::Markdown>> {
+        let source = crate::overview::description_to_render(description)?.to_string();
+        let language_registry = self.project.read(cx).languages().clone();
+        Some(cx.new(|cx| markdown::Markdown::new(source.into(), Some(language_registry), None, cx)))
     }
 
     pub fn changed_files(&self) -> &Load<Vec<ChangedFile>> {
@@ -346,7 +368,7 @@ impl PullRequestPanel {
                             .filter(|(name, _)| name.as_str() != "origin")
                             .map(|(_, url)| url.clone()),
                     );
-                    coordinates_from_remotes(&urls)
+                    coordinates_from_remotes(&urls, crate::supports_remote_host)
                 }
                 Ok(Err(_)) | Err(_) => Err(CoordinatesError::NoRemote),
             };
@@ -577,6 +599,7 @@ impl PullRequestPanel {
         self._files_task = None;
         self._comments_task = None;
         self.detail = Load::Idle;
+        self.description_markdown = None;
         self.changed_files = Load::Idle;
         // The previous pull request's comments and diff decorations belong to it, not to the new
         // selection, so they go rather than being inherited.
@@ -617,6 +640,8 @@ impl PullRequestPanel {
                     match detail {
                         Ok(detail) => {
                             panel.verdicts.insert(id.clone(), detail.verdicts.clone());
+                            panel.description_markdown =
+                                panel.build_description_markdown(detail.description.as_deref(), cx);
                             panel.detail = Load::Ready(detail);
                         }
                         Err(error) if error.is_cancelled() => {}

@@ -1,0 +1,24 @@
+output_files:
+  stdout: "/var/folders/ll/9_pmms9d4817fsdk3f14dmq00000gn/T/twg/1788689236/run.e1mlEV/stdout.json"
+  stdout_lines: 150
+  stdout_bytes: 8976
+  compact: "/var/folders/ll/9_pmms9d4817fsdk3f14dmq00000gn/T/twg/1788689236/run.e1mlEV/stdout.compact.json"
+  compact_bytes: 378
+agent_output:
+  summary: "stats"
+  view: "compact"
+  fields: ["id", "title", "links.html.href", "state", "updated_on", "destination.repository.name"]
+  field_source: "recommended"
+stdout_inline:
+  -
+    id: 3055
+    title: "[low-risk] VULN-2296487 Pin httpcore version for VULN"
+    links:
+      html:
+        href: "https://bitbucket.org/atlassian/viceroy/pull-requests/3055"
+    state: "OPEN"
+    updated_on: "2026-09-06T08:23:38.132156+00:00"
+    destination:
+      repository:
+        name: "viceroy"
+---END---

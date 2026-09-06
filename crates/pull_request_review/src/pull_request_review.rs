@@ -83,6 +83,15 @@ pub(crate) fn default_host(
     std::rc::Rc::new(host_twg::TwgHost::new(working_directory, environment, cx))
 }
 
+/// Whether the host this feature talks to can review a repository on the given remote host.
+///
+/// Forwarded from the implementation for the same reason [`default_host`] is: which platforms are
+/// supported is the implementation's business, and naming one above the boundary would break
+/// FR-057.
+pub(crate) fn supports_remote_host(host: &str) -> bool {
+    host_twg::supports_remote_host(host)
+}
+
 /// The default number of pull requests one list call asks for.
 pub(crate) const DEFAULT_LIST_LIMIT: usize = host_twg::DEFAULT_LIST_LIMIT;
 

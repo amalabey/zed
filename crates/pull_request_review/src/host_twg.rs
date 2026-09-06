@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use git::repository::RepoPath;
-use gpui::{App, Task, WeakEntity};
+use gpui::{App, AppContext as _, Task, WeakEntity};
 use project::ProjectEnvironment;
 use serde_json::Value;
 use url::Url;
@@ -39,6 +39,23 @@ pub const PROGRAM: &str = "twg";
 const DIFFSTAT_LIMIT: usize = 2000;
 const COMMENT_LIMIT: usize = 1000;
 pub const DEFAULT_LIST_LIMIT: usize = 100;
+
+/// The remote hosts this implementation speaks to.
+///
+/// Checked *before* any request, so a repository hosted somewhere else is reported as an
+/// unsupported remote rather than as a failed lookup. Without this a GitHub remote resolves to
+/// perfectly plausible coordinates, the tool is asked for a Bitbucket repository of that name, and
+/// the reviewer is handed a 404 to interpret.
+///
+/// Self-hosted Bitbucket Server installations are matched by prefix, since their hostnames are
+/// site-specific.
+pub fn supports_remote_host(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    host == "bitbucket.org"
+        || host.ends_with(".bitbucket.org")
+        || host.starts_with("bitbucket.")
+        || host.contains("bitbucket")
+}
 
 /// Every state the tool's `--state` option accepts. There is no `all` value, and no `DRAFT` state:
 /// a draft is an otherwise-open pull request carrying `draft: true`.
@@ -96,9 +113,11 @@ impl PullRequestHost for TwgHost {
             // issued in sequence rather than concurrently so a rate limit stops the fan-out
             // instead of multiplying it.
             for args in invocations {
-                let output = cx.update(|cx| process.run(args, cx)).await?;
-                let stdout = successful_stdout(&output)?;
-                let page = parse_list(&stdout, &repository, Utc::now())?;
+                let repository = repository.clone();
+                let page = run_and_parse(process.clone(), args, cx, move |payload| {
+                    parse_list(payload, &repository, Utc::now())
+                })
+                .await?;
                 summaries.extend(page);
             }
 
@@ -118,9 +137,10 @@ impl PullRequestHost for TwgHost {
         args.extend(Self::repository_args(&repository));
 
         cx.spawn(async move |cx| {
-            let output = cx.update(|cx| process.run(args, cx)).await?;
-            let stdout = successful_stdout(&output)?;
-            parse_detail(&stdout, &repository, Utc::now())
+            run_and_parse(process, args, cx, move |payload| {
+                parse_detail(payload, &repository, Utc::now())
+            })
+            .await
         })
     }
 
@@ -139,11 +159,7 @@ impl PullRequestHost for TwgHost {
         args.extend(Self::repository_args(&id.repository));
         args.extend(["-n".to_string(), DIFFSTAT_LIMIT.to_string()]);
 
-        cx.spawn(async move |cx| {
-            let output = cx.update(|cx| process.run(args, cx)).await?;
-            let stdout = successful_stdout(&output)?;
-            parse_diffstat(&stdout)
-        })
+        cx.spawn(async move |cx| run_and_parse(process, args, cx, parse_diffstat).await)
     }
 
     fn comments(
@@ -162,11 +178,7 @@ impl PullRequestHost for TwgHost {
         args.extend(Self::repository_args(&id.repository));
         args.extend(["-n".to_string(), COMMENT_LIMIT.to_string()]);
 
-        cx.spawn(async move |cx| {
-            let output = cx.update(|cx| process.run(args, cx)).await?;
-            let stdout = successful_stdout(&output)?;
-            parse_comments(&stdout)
-        })
+        cx.spawn(async move |cx| run_and_parse(process, args, cx, parse_comments).await)
     }
 
     fn post_comment(
@@ -179,28 +191,33 @@ impl PullRequestHost for TwgHost {
         let args = post_comment_args(id, &draft);
 
         cx.spawn(async move |cx| {
-            let output = cx.update(|cx| process.run(args, cx)).await?;
-            let stdout = successful_stdout(&output)?;
-            let value = parse_json(&stdout)?;
-            parse_comment(&value).ok_or_else(|| HostError::UnexpectedResponse {
-                detail: "the posted comment was not echoed back in a recognisable shape".into(),
-                version: None,
+            run_and_parse(process, args, cx, |payload| {
+                let value = parse_json(payload)?;
+                parse_comment(&value).ok_or_else(|| HostError::UnexpectedResponse {
+                    detail: "the posted comment was not echoed back in a recognisable shape".into(),
+                    version: None,
+                })
             })
+            .await
         })
     }
 
     fn viewer(&self, cx: &App) -> Task<Result<Identity, HostError>> {
         let process = self.process.clone();
-        let args = vec!["user".to_string(), "-o".to_string(), "json".to_string()];
+        // `whoami`, not `user`: `user` is a command *group* whose leaf is `user get`, and invoking
+        // the group prints its usage text to stdout with a non-zero exit. `whoami` is the
+        // documented alias and resolves to `user.get`.
+        let args = vec!["whoami".to_string(), "-o".to_string(), "json".to_string()];
 
         cx.spawn(async move |cx| {
-            let output = cx.update(|cx| process.run(args, cx)).await?;
-            let stdout = successful_stdout(&output)?;
-            let value = parse_json(&stdout)?;
-            parse_identity(&value).ok_or_else(|| HostError::UnexpectedResponse {
-                detail: "the signed-in account was not reported in a recognisable shape".into(),
-                version: None,
+            run_and_parse(process, args, cx, |payload| {
+                let value = parse_json(payload)?;
+                parse_identity(&value).ok_or_else(|| HostError::UnexpectedResponse {
+                    detail: "the signed-in account was not reported in a recognisable shape".into(),
+                    version: None,
+                })
             })
+            .await
         })
     }
 }
@@ -312,6 +329,83 @@ pub fn post_comment_args(id: &PullRequestId, draft: &DraftComment) -> Vec<String
 
 // -- Failure classification (FR-064) ------------------------------------------------------------
 
+/// The marker that identifies the tool's "summary envelope" rather than a payload.
+const ENVELOPE_MARKER: &str = "output_files:";
+
+/// Where the tool put the real payload, if what it gave us on stdout was an envelope.
+///
+/// Since 1.2.x, `-o json` may emit a YAML *summary envelope* on stdout — `output_files`,
+/// `agent_output`, and a compact `stdout_inline` projection carrying only a few "recommended"
+/// fields — while writing the actual JSON to a temp file. Its `--help` says `-o json` means "pure
+/// machine-readable JSON on stdout" and that the envelope requires `--output-summary` (default
+/// `false`), but 1.2.7 emits it regardless, on a pipe and on a TTY alike.
+///
+/// The envelope is honoured rather than rejected. Rejecting it would be defensible — it is a shape
+/// change, which is what `UnexpectedResponse` is for — but it would make the feature unusable on
+/// the current release, and the envelope tells us exactly where the payload is. The inline
+/// projection is deliberately *not* used: it carries a handful of fields, not the rows.
+pub fn payload_file(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim_start_matches('\u{feff}').trim_start();
+    if !trimmed.starts_with(ENVELOPE_MARKER) {
+        return None;
+    }
+    // Deliberately not a YAML parse: one quoted scalar under a known key is all that is needed,
+    // and taking a YAML dependency to read it would be a third-party dependency FR-079 forbids.
+    trimmed
+        .lines()
+        .skip_while(|line| !line.starts_with(ENVELOPE_MARKER))
+        .skip(1)
+        .take_while(|line| line.starts_with(char::is_whitespace))
+        .find_map(|line| {
+            let (key, value) = line.trim().split_once(':')?;
+            if key.trim() != "stdout" {
+                return None;
+            }
+            let value = value.trim().trim_matches('"');
+            (!value.is_empty()).then(|| value.to_string())
+        })
+}
+
+/// Resolve what the tool wrote to the JSON payload itself.
+async fn resolve_payload(stdout: String) -> Result<String, HostError> {
+    let Some(path) = payload_file(&stdout) else {
+        return Ok(stdout);
+    };
+    smol::fs::read_to_string(&path).await.map_err(|error| {
+        // The envelope named a file we cannot read. That is a genuine shape/contract problem, and
+        // naming the path is what makes it diagnosable.
+        HostError::UnexpectedResponse {
+            detail: format!(
+                "the tool wrote its output to {path}, which could not be read: {error}"
+            ),
+            version: None,
+        }
+    })
+}
+
+/// Run one invocation and turn its output into domain values.
+///
+/// The parse runs on the **background** executor, not merely the subprocess. A 500-row list is
+/// several megabytes of JSON (research.md §2); parsing that on the foreground thread would blow
+/// the frame budget however promptly the subprocess answered (FR-067).
+async fn run_and_parse<T>(
+    process: Arc<HostProcess>,
+    args: Vec<String>,
+    cx: &mut gpui::AsyncApp,
+    parse: impl FnOnce(&str) -> Result<T, HostError> + Send + 'static,
+) -> Result<T, HostError>
+where
+    T: Send + 'static,
+{
+    let output = cx.update(|cx| process.run(args, cx)).await?;
+    let stdout = successful_stdout(&output)?;
+    cx.background_spawn(async move {
+        let payload = resolve_payload(stdout).await?;
+        parse(&payload)
+    })
+    .await
+}
+
 /// Take stdout, or classify the failure.
 ///
 /// A zero exit with no output is a failure too: the tool always emits JSON on success with
@@ -363,6 +457,11 @@ pub fn classify_failure(stderr: &str, stdout: &str) -> HostError {
         "no access to",
     ]) {
         return HostError::PermissionDenied {
+            repository: "this repository".into(),
+        };
+    }
+    if mentions(&["resource not found", "not found", "404", "does not exist"]) {
+        return HostError::RepositoryNotFound {
             repository: "this repository".into(),
         };
     }
@@ -838,6 +937,8 @@ pub(crate) mod fixtures {
     pub const COMMENT_CREATED: &str = include_str!("test_fixtures/comment_created.json");
     pub const VIEWER: &str = include_str!("test_fixtures/viewer.json");
     pub const FAILING_OUTPUTS: &str = include_str!("test_fixtures/failing_outputs.json");
+    /// Captured verbatim from twg 1.2.7. See [`super::payload_file`].
+    pub const SUMMARY_ENVELOPE: &str = include_str!("test_fixtures/summary_envelope.yaml");
 
     /// A list of `count` rows, built by cloning one observed row.
     ///
@@ -1247,6 +1348,7 @@ mod tests {
                 HostError::NotAuthenticated => "NotAuthenticated",
                 HostError::CredentialExpired => "CredentialExpired",
                 HostError::PermissionDenied { .. } => "PermissionDenied",
+                HostError::RepositoryNotFound { .. } => "RepositoryNotFound",
                 HostError::Unreachable { .. } => "Unreachable",
                 HostError::RateLimited => "RateLimited",
                 HostError::UnexpectedResponse { .. } => "UnexpectedResponse",
@@ -1256,6 +1358,73 @@ mod tests {
             assert_eq!(actual, case.expected, "misclassified: {}", case.name);
             assert!(!error.message().is_empty());
         }
+    }
+
+    /// Which remotes this implementation can review. Checked before any request, so a repository
+    /// hosted elsewhere never becomes a doomed lookup the reviewer has to interpret.
+    /// The tool's stdout is not always the payload.
+    ///
+    /// Captured from twg 1.2.7, which emits a YAML summary envelope for `-o json` and writes the
+    /// real JSON to a temp file — despite its own `--help` saying `-o json` means "pure
+    /// machine-readable JSON on stdout" and that the envelope requires an opt-in flag whose default
+    /// is false. Phase 0 documented 1.0.1's contract, which was raw JSON; the tool changed under it.
+    ///
+    /// Without this the feature is broken on *every* Bitbucket repository, and the reviewer is told
+    /// to update the tool — which is what had already broken it.
+    #[test]
+    fn the_payload_is_found_when_the_tool_returns_a_summary_envelope() {
+        let path = payload_file(SUMMARY_ENVELOPE).expect("the envelope names its payload file");
+        assert!(path.ends_with("stdout.json"), "{path}");
+        assert!(
+            !path.contains("compact"),
+            "the compact projection carries a handful of recommended fields, not the rows: {path}"
+        );
+
+        // A leading byte-order mark must not hide the envelope.
+        let with_bom = format!("\u{feff}{SUMMARY_ENVELOPE}");
+        assert!(payload_file(&with_bom).is_some());
+
+        // Raw JSON is passed straight through — there is no file to read.
+        assert_eq!(payload_file("[]"), None);
+        assert_eq!(payload_file(LIST_MULTI_STATE), None);
+        assert_eq!(payload_file(""), None);
+        assert_eq!(payload_file("{\"a\": 1}"), None);
+
+        // An envelope with no usable stdout entry is not silently treated as a payload.
+        assert_eq!(
+            payload_file("output_files:\n  compact: \"/tmp/x.json\"\n"),
+            None
+        );
+        assert_eq!(payload_file("output_files:\n  stdout: \"\"\n"), None);
+    }
+
+    #[test]
+    fn only_this_platforms_remotes_are_supported() {
+        for host in [
+            "bitbucket.org",
+            "api.bitbucket.org",
+            "bitbucket.example.com",
+            "bitbucket.internal.corp",
+        ] {
+            assert!(supports_remote_host(host), "{host} should be supported");
+        }
+
+        for host in [
+            "github.com",
+            "gitlab.com",
+            "git.sr.ht",
+            "codeberg.org",
+            "example.com",
+            "",
+        ] {
+            assert!(
+                !supports_remote_host(host),
+                "{host} must not be treated as reviewable"
+            );
+        }
+
+        // Case and surrounding whitespace are not the reviewer's problem.
+        assert!(supports_remote_host("  BitBucket.ORG  "));
     }
 
     #[test]

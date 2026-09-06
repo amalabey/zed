@@ -16,9 +16,16 @@
   {
     "name": "permission denied",
     "stdout": "",
-    "stderr": "Error: 403 Forbidden — you do not have access to this repository",
+    "stderr": "Error: 403 Forbidden \u2014 you do not have access to this repository",
     "exit_code": 1,
     "expected": "PermissionDenied"
+  },
+  {
+    "name": "repository not found (observed: a GitHub remote's coordinates asked of Bitbucket)",
+    "stdout": "",
+    "stderr": "Error: Resource not found. Check that the workspace, repository, and resource exist.\n  HTTP status: 404",
+    "exit_code": 1,
+    "expected": "RepositoryNotFound"
   },
   {
     "name": "unreachable",
@@ -30,7 +37,7 @@
   {
     "name": "rate limited",
     "stdout": "",
-    "stderr": "Error: 429 Too Many Requests — rate limit exceeded, retry later",
+    "stderr": "Error: 429 Too Many Requests \u2014 rate limit exceeded, retry later",
     "exit_code": 1,
     "expected": "RateLimited"
   },
@@ -71,7 +78,7 @@
   },
   {
     "name": "unexpected response: a lone byte-order mark",
-    "stdout": "﻿",
+    "stdout": "\ufeff",
     "stderr": "",
     "exit_code": 0,
     "expected": "UnexpectedResponse"

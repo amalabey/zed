@@ -271,6 +271,13 @@ pub enum HostError {
     PermissionDenied {
         repository: String,
     },
+    /// The host has no such repository. Distinct from `PermissionDenied`, because the remedies
+    /// differ: a 403 means ask for access, a 404 means the repository is not where we looked — and
+    /// distinct from `UnexpectedResponse`, whose remedy is to update the tool, which would never
+    /// fix this.
+    RepositoryNotFound {
+        repository: String,
+    },
     Unreachable {
         detail: String,
     },
@@ -307,6 +314,9 @@ impl HostError {
             HostError::PermissionDenied { repository } => {
                 format!("You don't have access to {repository}.")
             }
+            HostError::RepositoryNotFound { repository } => {
+                format!("The pull request host has no repository {repository}.")
+            }
             HostError::Unreachable { detail } => {
                 format!("Couldn't reach the pull request host: {detail}")
             }
@@ -335,6 +345,10 @@ impl HostError {
             HostError::PermissionDenied { .. } => {
                 Some("Ask for access to the repository, then retry.")
             }
+            HostError::RepositoryNotFound { .. } => Some(
+                "Check the repository still exists there, and that this project's remote points \
+                 at it.",
+            ),
             HostError::Unreachable { .. } => Some("Check your connection, then retry."),
             HostError::RateLimited => Some("Wait a moment, then retry."),
             HostError::UnexpectedResponse { .. } => Some("Updating the tool may resolve this."),
@@ -493,11 +507,36 @@ impl CoordinatesError {
     }
 }
 
-/// Derive the repository coordinates from a remote URL.
+/// A remote URL, taken apart.
 ///
-/// Recognises the `scp`-style and URL forms of the hosts this phase supports. Anything else is
-/// reported as an unsupported remote rather than guessed at.
-pub fn coordinates_from_remote_url(url: &str) -> Result<RepositoryCoordinates, CoordinatesError> {
+/// The `host` is kept rather than discarded, because whether a remote can be reviewed at all
+/// depends on *which* host it names — and only an implementation knows which hosts it speaks to.
+/// Deciding that here would put a platform name above the boundary (FR-057).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteRepository {
+    pub host: String,
+    pub coordinates: RepositoryCoordinates,
+}
+
+/// Whether this looks like a hostname rather than a path component.
+///
+/// "Contains a dot" alone is not enough: `..` passes it, which would make `../sibling/project`
+/// parse as a remote repository on a host called `..`.
+fn is_hostname(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.contains('.')
+        && !candidate.starts_with('.')
+        && !candidate.ends_with('.')
+        && candidate.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '.' || character == '-'
+        })
+}
+
+/// Take a remote URL apart into its host and its repository coordinates.
+///
+/// Recognises the `scp`-style and URL forms. This says nothing about whether the host is one the
+/// feature can review — see [`coordinates_from_remotes`].
+pub fn parse_remote_url(url: &str) -> Result<RemoteRepository, CoordinatesError> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err(CoordinatesError::NoRemote);
@@ -507,24 +546,38 @@ pub fn coordinates_from_remote_url(url: &str) -> Result<RepositoryCoordinates, C
         url: trimmed.to_string(),
     };
 
-    // Strip the scheme and any credentials, leaving `host/path`.
-    let without_scheme = match trimmed.split_once("://") {
-        Some((_, rest)) => rest,
-        None => trimmed,
+    // Strip the scheme and any credentials, leaving `host/path` or `host:path`.
+    let (had_scheme, without_scheme) = match trimmed.split_once("://") {
+        Some((_, rest)) => (true, rest),
+        None => (false, trimmed),
     };
     let without_credentials = match without_scheme.split_once('@') {
         Some((_, rest)) => rest,
         None => without_scheme,
     };
 
-    // `scp` syntax separates host from path with a colon; URL syntax with a slash.
-    let path = match without_credentials.split_once(':') {
-        Some((_, rest)) => rest.trim_start_matches('/'),
-        None => match without_credentials.split_once('/') {
-            Some((_, rest)) => rest,
-            None => return Err(unsupported()),
-        },
+    // The separator depends on the syntax, and getting this backwards is how a port ends up parsed
+    // as the first path segment. With a scheme it is URL syntax, where a colon introduces a *port*
+    // and the path starts at the first slash. Without one it is `scp` syntax, where the colon is
+    // the host/path separator and there is no port at all.
+    let (host_and_port, path) = if had_scheme {
+        without_credentials
+            .split_once('/')
+            .ok_or_else(unsupported)?
+    } else {
+        match without_credentials.split_once(':') {
+            Some((host, rest)) => (host, rest.trim_start_matches('/')),
+            None => without_credentials
+                .split_once('/')
+                .ok_or_else(unsupported)?,
+        }
     };
+
+    let host = host_and_port.split(':').next().unwrap_or(host_and_port);
+    if !is_hostname(host) {
+        // Not a hostname means this is a local path, not a remote we can address.
+        return Err(unsupported());
+    }
 
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
@@ -537,9 +590,12 @@ pub fn coordinates_from_remote_url(url: &str) -> Result<RepositoryCoordinates, C
         return Err(unsupported());
     }
 
-    Ok(RepositoryCoordinates {
-        owner: owner.to_string(),
-        name: name.to_string(),
+    Ok(RemoteRepository {
+        host: host.to_ascii_lowercase(),
+        coordinates: RepositoryCoordinates {
+            owner: owner.to_string(),
+            name: name.to_string(),
+        },
     })
 }
 
@@ -548,8 +604,14 @@ pub fn coordinates_from_remote_url(url: &str) -> Result<RepositoryCoordinates, C
 /// `remote_urls` is given in the order the caller prefers, so the conventional default remote wins
 /// when there is one. Several *distinct* repositories is reported rather than resolved, because
 /// picking one silently would show the reviewer a plausible list from the wrong repository.
+///
+/// `is_supported_host` is supplied by the caller, because which hosts can be reviewed is the
+/// implementation's business, not the boundary's. A remote whose host it rejects is reported as
+/// unsupported **without the host ever being contacted** — the alternative is a doomed request
+/// whose failure the reviewer then has to interpret.
 pub fn coordinates_from_remotes(
     remote_urls: &[String],
+    is_supported_host: impl Fn(&str) -> bool,
 ) -> Result<RepositoryCoordinates, CoordinatesError> {
     if remote_urls.is_empty() {
         return Err(CoordinatesError::NoRemote);
@@ -558,11 +620,16 @@ pub fn coordinates_from_remotes(
     let mut resolved: Vec<RepositoryCoordinates> = Vec::new();
     let mut last_error = None;
     for url in remote_urls {
-        match coordinates_from_remote_url(url) {
-            Ok(coordinates) => {
-                if !resolved.contains(&coordinates) {
-                    resolved.push(coordinates);
+        match parse_remote_url(url) {
+            Ok(remote) if is_supported_host(&remote.host) => {
+                if !resolved.contains(&remote.coordinates) {
+                    resolved.push(remote.coordinates);
                 }
+            }
+            Ok(_) => {
+                last_error = Some(CoordinatesError::UnsupportedRemote {
+                    url: url.trim().to_string(),
+                })
             }
             Err(error) => last_error = Some(error),
         }
@@ -586,6 +653,12 @@ pub type SharedHost = Arc<dyn PullRequestHost>;
 mod tests {
     use super::*;
 
+    /// Anything is "supported" for the parsing tests; host support is the implementation's job and
+    /// is tested where it lives.
+    fn any_host(_host: &str) -> bool {
+        true
+    }
+
     #[test]
     fn remote_urls_resolve_to_coordinates() {
         for url in [
@@ -594,12 +667,18 @@ mod tests {
             "https://user@bitbucket.org/atlassian/twg-cli",
             "ssh://git@bitbucket.org/atlassian/twg-cli.git",
         ] {
+            let remote = parse_remote_url(url)
+                .unwrap_or_else(|error| panic!("{url} should parse, got {error:?}"));
             assert_eq!(
-                coordinates_from_remote_url(url),
-                Ok(RepositoryCoordinates {
+                remote.host, "bitbucket.org",
+                "the host must be kept, not discarded"
+            );
+            assert_eq!(
+                remote.coordinates,
+                RepositoryCoordinates {
                     owner: "atlassian".into(),
                     name: "twg-cli".into(),
-                }),
+                },
                 "failed for {url}"
             );
         }
@@ -607,26 +686,26 @@ mod tests {
 
     #[test]
     fn unresolvable_remotes_are_named_rather_than_swallowed() {
-        assert_eq!(
-            coordinates_from_remote_url(""),
-            Err(CoordinatesError::NoRemote)
-        );
+        assert_eq!(parse_remote_url(""), Err(CoordinatesError::NoRemote));
         assert!(matches!(
-            coordinates_from_remote_url("/srv/git/bare-repo.git"),
+            parse_remote_url("/srv/git/bare-repo.git"),
             Err(CoordinatesError::UnsupportedRemote { .. })
         ));
         assert!(matches!(
-            coordinates_from_remote_url("https://example.com/a/b/c/d"),
+            parse_remote_url("https://example.com/a/b/c/d"),
             Err(CoordinatesError::UnsupportedRemote { .. })
         ));
     }
 
     #[test]
     fn several_distinct_repositories_is_a_stated_reason_not_a_guess() {
-        let error = coordinates_from_remotes(&[
-            "git@bitbucket.org:atlassian/one.git".into(),
-            "git@bitbucket.org:atlassian/two.git".into(),
-        ])
+        let error = coordinates_from_remotes(
+            &[
+                "git@bitbucket.org:atlassian/one.git".into(),
+                "git@bitbucket.org:atlassian/two.git".into(),
+            ],
+            any_host,
+        )
         .expect_err("two repositories must not silently resolve to one");
         match error {
             CoordinatesError::SeveralRepositories { candidates } => {
@@ -639,10 +718,13 @@ mod tests {
     #[test]
     fn the_same_repository_via_several_remotes_is_not_ambiguous() {
         assert_eq!(
-            coordinates_from_remotes(&[
-                "git@bitbucket.org:atlassian/twg-cli.git".into(),
-                "https://bitbucket.org/atlassian/twg-cli.git".into(),
-            ]),
+            coordinates_from_remotes(
+                &[
+                    "git@bitbucket.org:atlassian/twg-cli.git".into(),
+                    "https://bitbucket.org/atlassian/twg-cli.git".into(),
+                ],
+                any_host,
+            ),
             Ok(RepositoryCoordinates {
                 owner: "atlassian".into(),
                 name: "twg-cli".into(),
@@ -653,9 +735,105 @@ mod tests {
     #[test]
     fn no_remotes_is_distinct_from_an_unsupported_one() {
         assert_eq!(
-            coordinates_from_remotes(&[]),
+            coordinates_from_remotes(&[], any_host),
             Err(CoordinatesError::NoRemote)
         );
+        // "no remote at all" and "a remote we cannot review" are different problems with
+        // different remedies, so they must not collapse into one message (FR-005).
+        assert_ne!(
+            CoordinatesError::NoRemote.message(),
+            CoordinatesError::UnsupportedRemote {
+                url: "git@github.com:a/b.git".into()
+            }
+            .message()
+        );
+    }
+
+    /// A remote on a host the implementation does not speak to must be reported as unsupported,
+    /// **without the host being contacted**.
+    ///
+    /// This was a real bug, found by opening the panel on a GitHub-hosted checkout. The parser
+    /// discarded the hostname, so `git@github.com:amalabey/zed.git` resolved to perfectly plausible
+    /// coordinates, a Bitbucket lookup of that name was attempted, and the reviewer was shown
+    /// "Updating the tool may resolve this" for a repository that simply is not there. The earlier
+    /// tests only covered unparseable *shapes*, which is exactly why they passed.
+    #[test]
+    fn a_remote_on_an_unsupported_host_is_reported_rather_than_attempted() {
+        let only_bitbucket = |host: &str| host == "bitbucket.org";
+
+        for url in [
+            "git@github.com:amalabey/zed.git",
+            "https://github.com/zed-industries/zed.git",
+            "git@gitlab.com:group/project.git",
+        ] {
+            // It parses — the shape is fine. It is the *host* that is not supported.
+            let remote = parse_remote_url(url).expect("the shape is valid");
+            assert!(!only_bitbucket(&remote.host), "{url}");
+
+            match coordinates_from_remotes(&[url.to_string()], only_bitbucket) {
+                Err(CoordinatesError::UnsupportedRemote { url: reported }) => {
+                    assert_eq!(reported, url, "the message must name the remote");
+                }
+                other => panic!("{url} should be unsupported, got {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            coordinates_from_remotes(
+                &["git@bitbucket.org:atlassian/twg-cli.git".into()],
+                only_bitbucket
+            ),
+            Ok(RepositoryCoordinates {
+                owner: "atlassian".into(),
+                name: "twg-cli".into(),
+            })
+        );
+    }
+
+    /// A project with both a supported and an unsupported remote is reviewable through the
+    /// supported one, rather than refused because the other exists.
+    #[test]
+    fn a_supported_remote_wins_over_an_unsupported_sibling() {
+        assert_eq!(
+            coordinates_from_remotes(
+                &[
+                    "git@github.com:amalabey/zed.git".into(),
+                    "git@bitbucket.org:atlassian/twg-cli.git".into(),
+                ],
+                |host| host == "bitbucket.org",
+            ),
+            Ok(RepositoryCoordinates {
+                owner: "atlassian".into(),
+                name: "twg-cli".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_host_with_a_port_stays_recognisable() {
+        let remote = parse_remote_url("https://bitbucket.example.com:7999/team/project.git")
+            .expect("a ported URL should parse");
+        assert_eq!(remote.host, "bitbucket.example.com");
+        assert_eq!(remote.coordinates.owner, "team");
+        assert_eq!(remote.coordinates.name, "project");
+    }
+
+    #[test]
+    fn a_local_path_is_not_mistaken_for_a_remote() {
+        // No dot in the "host" position means this is a path, not a hostname.
+        for url in [
+            "/srv/git/project.git",
+            "../sibling/project",
+            "~/work/project",
+        ] {
+            assert!(
+                matches!(
+                    parse_remote_url(url),
+                    Err(CoordinatesError::UnsupportedRemote { .. })
+                ),
+                "{url} should not resolve to a remote repository"
+            );
+        }
     }
 
     #[test]
@@ -709,6 +887,9 @@ mod tests {
             HostError::PermissionDenied {
                 repository: "a/b".into(),
             },
+            HostError::RepositoryNotFound {
+                repository: "a/b".into(),
+            },
             HostError::Unreachable {
                 detail: "dns".into(),
             },
@@ -721,8 +902,10 @@ mod tests {
         let mut messages = errors.iter().map(HostError::message).collect::<Vec<_>>();
         messages.sort();
         messages.dedup();
-        // SC-006: seven induced conditions must produce seven different, actionable messages.
-        assert_eq!(messages.len(), 7);
+        // SC-006 asks for seven induced conditions; there are eight classified ones, each with
+        // its own actionable message. A 404 was originally missing and fell through to
+        // UnexpectedResponse, whose remedy — update the tool — could never fix it.
+        assert_eq!(messages.len(), 8);
         assert!(errors.iter().all(|error| error.remedy().is_some()));
     }
 }

@@ -27,7 +27,7 @@ pub fn description_to_render(description: Option<&str>) -> Option<&str> {
 
 pub fn render(
     panel: &mut PullRequestPanel,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<PullRequestPanel>,
 ) -> AnyElement {
     match panel.detail() {
@@ -63,7 +63,7 @@ pub fn render(
                 .size_full()
                 .children(diff_problem.map(|reason| notice(reason, Color::Error)))
                 .children(comment_problem.map(|reason| notice(reason, Color::Warning)))
-                .child(render_detail(detail, window, cx))
+                .child(render_detail(detail, panel.description_markdown()))
                 .children(unanchored.map(|comments| div().p_2().child(comments)))
                 .into_any_element()
         }
@@ -78,8 +78,7 @@ fn notice(message: String, color: Color) -> impl IntoElement {
 
 fn render_detail(
     detail: &PullRequestDetail,
-    window: &mut Window,
-    cx: &mut Context<PullRequestPanel>,
+    description: Option<&Entity<Markdown>>,
 ) -> impl IntoElement {
     let summary = &detail.summary;
     let web_url = summary.web_url.clone();
@@ -148,38 +147,39 @@ fn render_detail(
                 ),
         )
         .child(Divider::horizontal())
-        .child(render_description(detail, window, cx))
+        .child(render_description(detail, description))
         .child(Divider::horizontal())
         .child(render_verdicts(&detail.verdicts))
 }
 
+/// The description, rendered as formatted markdown rather than raw markup (FR-023).
+///
+/// The [`Markdown`] entity is *built when the detail loads*, not here. Building it during render
+/// would allocate an entity every frame and throw away its state each time — and reaching the
+/// language registry needed to build it meant reading the panel entity from inside the panel's own
+/// `render`, which GPUI refuses: "cannot read PullRequestPanel while it is already being updated".
+/// That was a crash, not a slow path.
 fn render_description(
     detail: &PullRequestDetail,
-    _window: &mut Window,
-    cx: &mut Context<PullRequestPanel>,
+    description: Option<&Entity<Markdown>>,
 ) -> AnyElement {
-    match description_to_render(detail.description.as_deref()) {
-        // Rendered as formatted markdown rather than raw markup (FR-023), through the same crate
-        // the rest of Zed renders markdown with.
-        Some(description) => {
-            let markdown = build_markdown(description.to_string(), cx);
-            div()
-                .child(MarkdownElement::new(
-                    markdown,
-                    markdown::MarkdownStyle::default(),
-                ))
-                .into_any_element()
-        }
-        None => Label::new(NO_DESCRIPTION)
+    match (
+        description_to_render(detail.description.as_deref()),
+        description,
+    ) {
+        (Some(_), Some(markdown)) => div()
+            .child(MarkdownElement::new(
+                markdown.clone(),
+                markdown::MarkdownStyle::default(),
+            ))
+            .into_any_element(),
+        // Both `None` and `Some("")` land here, and so does a description whose markdown entity is
+        // not ready yet — all three read as "no description" rather than as a blank area (FR-024).
+        _ => Label::new(NO_DESCRIPTION)
             .size(LabelSize::Small)
             .color(Color::Muted)
             .into_any_element(),
     }
-}
-
-fn build_markdown(source: String, cx: &mut Context<PullRequestPanel>) -> Entity<Markdown> {
-    let language_registry = cx.entity().read(cx).project().read(cx).languages().clone();
-    cx.new(|cx| Markdown::new(source.into(), Some(language_registry), None, cx))
 }
 
 /// Every reviewer's position, including the ones who have not reached one — a requested reviewer

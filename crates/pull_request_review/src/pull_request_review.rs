@@ -69,6 +69,23 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+/// Build the host this feature talks to.
+///
+/// This is the crate's composition point, and the **only** place above the boundary that names an
+/// implementation. FR-057 forbids a host, platform or transport name anywhere else, so the panel
+/// asks for "the host" and gets one — which is precisely what makes adding GitHub (FR-056) a matter
+/// of changing this function and nothing above it.
+pub(crate) fn default_host(
+    working_directory: std::sync::Arc<std::path::Path>,
+    environment: gpui::WeakEntity<project::ProjectEnvironment>,
+    cx: &mut App,
+) -> std::rc::Rc<dyn host::PullRequestHost> {
+    std::rc::Rc::new(host_twg::TwgHost::new(working_directory, environment, cx))
+}
+
+/// The default number of pull requests one list call asks for.
+pub(crate) const DEFAULT_LIST_LIMIT: usize = host_twg::DEFAULT_LIST_LIMIT;
+
 /// The part of a source file that ships, with its `#[cfg(test)]` module removed.
 ///
 /// Several checks in this crate assert a property of the code by reading it. Every one of them is

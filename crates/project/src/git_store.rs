@@ -9658,6 +9658,30 @@ impl Repository {
         })
     }
 
+    /// Loads the contents of the given `<revision>:<path>` specifiers, in the order requested.
+    ///
+    /// An entry is `None` when the revision or the path does not exist, which is a normal result
+    /// rather than an error: a file added by one revision has no content in another.
+    ///
+    /// Only local repositories are supported. Serving this remotely would need a new protocol
+    /// message and remote-server handling, so callers get an explicit error rather than silently
+    /// empty content.
+    pub fn load_blob_contents(
+        &mut self,
+        specifiers: Vec<String>,
+    ) -> oneshot::Receiver<Result<Vec<Option<Vec<u8>>>>> {
+        self.send_job("load_blob_contents", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.load_revisions(specifiers).await
+                }
+                RepositoryState::Remote(_) => {
+                    anyhow::bail!("loading blob contents is not supported for remote projects")
+                }
+            }
+        })
+    }
+
     pub fn diff(&mut self, diff_type: DiffType, _cx: &App) -> oneshot::Receiver<Result<String>> {
         let id = self.id;
         self.send_job("diff", None, move |repo, _cx| async move {

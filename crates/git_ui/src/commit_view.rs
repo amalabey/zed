@@ -288,7 +288,12 @@ impl CommitView {
             .detach();
     }
 
-    fn new(
+    /// The view's split diff editor, for callers that need to decorate it.
+    pub fn editor(&self) -> &Entity<SplittableEditor> {
+        &self.editor
+    }
+
+    pub fn new(
         commit: CommitDetails,
         commit_diff: CommitDiff,
         repository: Entity<Repository>,

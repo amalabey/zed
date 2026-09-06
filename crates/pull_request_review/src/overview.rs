@@ -52,8 +52,28 @@ pub fn render(
             )
             .into_any_element(),
 
-        Load::Ready(detail) => render_detail(detail, window, cx).into_any_element(),
+        Load::Ready(detail) => {
+            // Reported here rather than over the diff: the threads failing to load must not make
+            // the code unreadable, and a comment can still be added (FR-055).
+            let comment_problem = panel.comment_problem().map(str::to_owned);
+            let diff_problem = panel.diff_problem().map(str::to_owned);
+            let unanchored = render_unanchored_comments(panel.comments());
+
+            v_flex()
+                .size_full()
+                .children(diff_problem.map(|reason| notice(reason, Color::Error)))
+                .children(comment_problem.map(|reason| notice(reason, Color::Warning)))
+                .child(render_detail(detail, window, cx))
+                .children(unanchored.map(|comments| div().p_2().child(comments)))
+                .into_any_element()
+        }
     }
+}
+
+fn notice(message: String, color: Color) -> impl IntoElement {
+    div()
+        .p_2()
+        .child(Label::new(message).size(LabelSize::Small).color(color))
 }
 
 fn render_detail(

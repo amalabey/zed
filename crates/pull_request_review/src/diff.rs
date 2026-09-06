@@ -9,17 +9,300 @@
 //! decision. The cost is that `git_ui/src/commit_view.rs` is permanently on the FR-078 allowlist,
 //! which FR-081, FR-082 and SC-021 exist to bound.
 
+use collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 
+use editor::display_map::{
+    BlockPlacement, BlockProperties, BlockStyle, CustomBlockId, RenderBlock,
+};
+use editor::{Editor, SplittableEditor};
 use git::repository::{CommitDetails, RepoPath};
-use gpui::{AppContext as _, Context, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, IntoElement, Task, Window};
 use project::git_store::{CommitDiff, CommitFile};
 use util::ResultExt as _;
 
 use crate::changeset::{Changeset, FileDiff, FileDiffOutcome};
 use crate::changeset_pull_request::PullRequestChangeset;
-use crate::host::PullRequestDetail;
+use crate::comments::{
+    ComposeContext, ComposeRefusal, Composer, CursorTarget, ThreadBlock, ThreadReplyContext,
+    side_for_diff_status, side_for_split_pane,
+};
+use crate::host::{CommentThread, DiffSide, PullRequestDetail};
 use crate::panel::PullRequestPanel;
+
+/// Resolve where the cursor is, in diff terms.
+///
+/// Two cases, and they resolve differently:
+///
+/// * **Split**, where the two sides are two editors. Which pane has focus answers the question
+///   outright, and the row under the cursor is irrelevant.
+/// * **Unified**, where both sides share one editor. The row's own diff status answers it: a
+///   deleted row is the old side, an added or modified row the new side, and an unchanged context
+///   row identifies *neither* — it exists identically on both sides.
+///
+/// The last case is refused rather than guessed at. A comment posted against the wrong side lands
+/// on a different line of a different file version, and the reviewer has no way to tell from the
+/// pull request that it happened (FR-048).
+pub fn cursor_target(
+    splittable: &Entity<SplittableEditor>,
+    path: RepoPath,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<CursorTarget, ComposeRefusal> {
+    let (focused, is_left_pane, is_split) = {
+        let split = splittable.read(cx);
+        let focused = split.focused_editor().clone();
+        let is_left_pane = split
+            .lhs_editor()
+            .is_some_and(|lhs| lhs.entity_id() == focused.entity_id());
+        (focused, is_left_pane, split.is_split())
+    };
+
+    let snapshot = focused.update(cx, |editor, cx| editor.snapshot(window, cx));
+    let selection = focused
+        .read(cx)
+        .selections
+        .newest_display(&snapshot.display_snapshot);
+
+    let first_row = selection.start.row().min(selection.end.row());
+    let last_row = selection.start.row().max(selection.end.row());
+
+    // The row's buffer line and its diff status, read from the display rather than guessed from the
+    // multibuffer offset.
+    let row_info = snapshot
+        .display_snapshot
+        .row_infos(first_row)
+        .next()
+        .ok_or(ComposeRefusal::LineNotInChange)?;
+
+    let side = if is_split {
+        Some(side_for_split_pane(is_left_pane))
+    } else {
+        side_for_diff_status(row_info.diff_status.map(|status| status.kind))
+    };
+
+    // A row with no diff status at all is unchanged context, which the pull request does not
+    // change and so has nowhere to attach a comment.
+    let is_part_of_change = is_split || row_info.diff_status.is_some();
+
+    // Buffer rows are 0-based; comment anchors are 1-based lines.
+    let line = row_info
+        .buffer_row
+        .ok_or(ComposeRefusal::LineNotInChange)?
+        .saturating_add(1);
+
+    let selection_span = {
+        let last_line = snapshot
+            .display_snapshot
+            .row_infos(last_row)
+            .next()
+            .and_then(|info| info.buffer_row)
+            .map(|row| row.saturating_add(1))
+            .unwrap_or(line);
+        line.min(last_line)..=line.max(last_line)
+    };
+
+    Ok(CursorTarget {
+        path,
+        side,
+        line,
+        is_part_of_change,
+        selection: selection_span,
+    })
+}
+
+/// The blocks this feature has put into one open diff.
+///
+/// Held so they can be removed when the reviewer moves to another file: the diff item is reused
+/// across file opens (FR-039), so its decorations have to be replaced rather than accumulated.
+pub struct DiffAnnotations {
+    editor: Entity<SplittableEditor>,
+    path: RepoPath,
+    thread_blocks: Vec<Entity<ThreadBlock>>,
+    block_ids: Vec<CustomBlockId>,
+    composer: Option<Entity<Composer>>,
+    composer_block: Option<CustomBlockId>,
+}
+
+impl DiffAnnotations {
+    pub fn new(editor: Entity<SplittableEditor>, path: RepoPath) -> Self {
+        Self {
+            editor,
+            path,
+            thread_blocks: Vec::new(),
+            block_ids: Vec::new(),
+            composer: None,
+            composer_block: None,
+        }
+    }
+
+    pub fn path(&self) -> &RepoPath {
+        &self.path
+    }
+
+    pub fn editor(&self) -> &Entity<SplittableEditor> {
+        &self.editor
+    }
+
+    pub fn composer(&self) -> Option<&Entity<Composer>> {
+        self.composer.as_ref()
+    }
+
+    /// Which editor a side's decorations belong in.
+    ///
+    /// In unified mode there is only one, so both sides land there.
+    fn editor_for_side(&self, side: DiffSide, cx: &App) -> Entity<Editor> {
+        let split = self.editor.read(cx);
+        match side {
+            DiffSide::Old => split
+                .lhs_editor()
+                .cloned()
+                .unwrap_or_else(|| split.rhs_editor().clone()),
+            DiffSide::New => split.rhs_editor().clone(),
+        }
+    }
+
+    /// Place a block at a 1-based line of the given side.
+    fn insert_block(
+        &self,
+        side: DiffSide,
+        line: u32,
+        height: u32,
+        render: RenderBlock,
+        cx: &mut App,
+    ) -> Option<CustomBlockId> {
+        let editor = self.editor_for_side(side, cx);
+        editor.update(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Anchor by buffer row rather than by offset, so the block stays with its line if the
+            // multibuffer is re-excerpted around it.
+            let row = line.saturating_sub(1);
+            let point = snapshot.clip_point(
+                multi_buffer::MultiBufferPoint::new(row, 0),
+                text::Bias::Left,
+            );
+            let anchor = snapshot.anchor_before(point);
+            editor
+                .insert_blocks(
+                    [BlockProperties {
+                        placement: BlockPlacement::Below(anchor),
+                        height: Some(height),
+                        style: BlockStyle::Flex,
+                        render,
+                        priority: 0,
+                    }],
+                    None,
+                    cx,
+                )
+                .into_iter()
+                .next()
+        })
+    }
+
+    /// Show the threads already on this file, each at the line it is anchored to (FR-050).
+    pub fn set_threads(
+        &mut self,
+        threads: Vec<CommentThread>,
+        reply_context: Option<ThreadReplyContext>,
+        cx: &mut App,
+    ) {
+        self.clear_thread_blocks(cx);
+
+        for thread in threads {
+            let Some(anchor) = thread.anchor.clone() else {
+                // An unanchored comment belongs in the Overview tab, not here (FR-052).
+                continue;
+            };
+            if anchor.path != self.path {
+                continue;
+            }
+
+            let block = cx.new(|_cx| ThreadBlock::new(thread, reply_context.clone()));
+            let render_block = block.clone();
+            let id = self.insert_block(
+                anchor.side,
+                *anchor.lines.start(),
+                THREAD_BLOCK_HEIGHT,
+                Arc::new(move |_context| render_block.clone().into_any_element()),
+                cx,
+            );
+
+            self.thread_blocks.push(block);
+            if let Some(id) = id {
+                self.block_ids.push(id);
+            }
+        }
+    }
+
+    /// Open an inline compose editor at the reviewer's cursor (FR-040, FR-041).
+    pub fn begin_compose(
+        &mut self,
+        context: ComposeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<Entity<Composer>, ComposeRefusal> {
+        let target = cursor_target(&self.editor, self.path.clone(), window, cx)?;
+        let composer = Composer::open(context, &target, None, window, cx)?;
+
+        self.end_compose(cx);
+
+        let render_composer = composer.clone();
+        let id = self.insert_block(
+            composer.read(cx).side(),
+            composer.read(cx).line(),
+            COMPOSER_BLOCK_HEIGHT,
+            Arc::new(move |_context| render_composer.clone().into_any_element()),
+            cx,
+        );
+        self.composer = Some(composer.clone());
+        self.composer_block = id;
+
+        Ok(composer)
+    }
+
+    pub fn end_compose(&mut self, cx: &mut App) {
+        self.composer = None;
+        if let Some(id) = self.composer_block.take() {
+            let editor = self.editor.read(cx).rhs_editor().clone();
+            editor.update(cx, |editor, cx| {
+                editor.remove_blocks(HashSet::from_iter([id]), None, cx);
+            });
+            if let Some(lhs) = self.editor.read(cx).lhs_editor().cloned() {
+                lhs.update(cx, |editor, cx| {
+                    editor.remove_blocks(HashSet::from_iter([id]), None, cx);
+                });
+            }
+        }
+    }
+
+    fn clear_thread_blocks(&mut self, cx: &mut App) {
+        self.thread_blocks.clear();
+        if self.block_ids.is_empty() {
+            return;
+        }
+        let ids: HashSet<CustomBlockId> = self.block_ids.drain(..).collect();
+        let split = self.editor.read(cx);
+        let editors: Vec<Entity<Editor>> = split
+            .lhs_editor()
+            .cloned()
+            .into_iter()
+            .chain([split.rhs_editor().clone()])
+            .collect();
+        for editor in editors {
+            editor.update(cx, |editor, cx| {
+                editor.remove_blocks(ids.clone(), None, cx);
+            });
+        }
+    }
+}
+
+/// Rows a thread block and a compose block occupy.
+///
+/// Fixed rather than measured: a block whose height depended on its content would reflow the diff
+/// every time a reply arrived, and the block scrolls internally instead.
+const THREAD_BLOCK_HEIGHT: u32 = 6;
+const COMPOSER_BLOCK_HEIGHT: u32 = 8;
 
 /// Synthesise the commit the diff view will describe.
 ///
@@ -144,13 +427,15 @@ pub fn open_file(
                         workspace_handle,
                         None,
                         // Scopes the view to the one file the reviewer opened.
-                        Some(path),
+                        Some(path.clone()),
                         window,
                         cx,
                     )
                 });
 
                 let new_item_id = view.entity_id();
+                // Captured before the view is handed to the pane, which takes ownership of it.
+                let split_editor = view.read(cx).editor().clone();
                 let pane = workspace.active_pane();
                 pane.update(cx, |pane, cx| {
                     // One item is reused across successive file opens, so moving between files does
@@ -173,20 +458,62 @@ pub fn open_file(
                         None => pane.add_item(Box::new(view), true, true, None, window, cx),
                     }
                 });
-                new_item_id
+                (new_item_id, split_editor)
             })
             .log_err();
 
+        let (opened_item_id, split_editor) = match opened_item_id {
+            Some((item_id, editor)) => (item_id, Some(editor)),
+            // The workspace went away mid-open. Nothing to decorate, and the panel must forget the
+            // id it was reusing rather than keep pointing at a stale tab.
+            None => {
+                panel
+                    .update(cx, |panel, cx| panel.finish_diff_open(None, cx))
+                    .ok();
+                return;
+            }
+        };
+
         panel
             .update(cx, |panel, cx| {
-                // `None` means the item was never added — the workspace was gone — so the panel
-                // must forget the id it was reusing rather than keep pointing at a stale tab.
-                panel.finish_diff_open(opened_item_id, cx);
+                panel.finish_diff_open(Some(opened_item_id), cx);
+                if let Some(editor) = split_editor {
+                    panel.attach_diff_annotations(DiffAnnotations::new(editor, path), cx);
+                }
             })
             .ok();
     });
 
     panel.hold_diff_task(task);
+}
+
+/// Comment on the line under the cursor in the open diff (FR-040).
+///
+/// Reported in the panel's own surface when it cannot be done, with the reason — no modal, no focus
+/// theft (FR-071).
+pub fn add_comment(
+    panel: &mut PullRequestPanel,
+    window: &mut Window,
+    cx: &mut Context<PullRequestPanel>,
+) {
+    let Some(context) = panel.compose_context() else {
+        // Nothing is selected, or the pull request cannot be commented on. The second case has
+        // already been reported by `compose_context`.
+        return;
+    };
+
+    let Some(annotations) = panel.diff_annotations_mut() else {
+        panel.report_diff_problem(
+            "Open a file's diff first — a comment is written against a line of it.",
+            cx,
+        );
+        return;
+    };
+
+    match annotations.begin_compose(context, window, cx) {
+        Ok(composer) => panel.observe_composer(composer, cx),
+        Err(refusal) => panel.report_diff_problem(refusal.message(), cx),
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,9 @@ path = "src/pull_request_review.rs"
 [dependencies]
 anyhow.workspace = true
 askpass.workspace = true
+buffer_diff.workspace = true
+multi_buffer.workspace = true
+text.workspace = true
 chrono.workspace = true
 collections.workspace = true
 db.workspace = true

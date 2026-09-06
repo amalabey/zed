@@ -217,20 +217,20 @@ the reviewer — verified against the pull request itself.
 
 **Depends on**: User Story 3 (the comment is composed from the diff surface).
 
-- [ ] T071 [US4] Declare the comment action in `crates/pull_request_review/src/pull_request_review.rs` so it is discoverable in the command palette and bindable in the keymap, with no default binding (FR-040, FR-066)
-- [ ] T072 [US4] Open an inline compose editor at the cursor's line in `crates/pull_request_review/src/comments.rs`, without stealing focus from the reviewer's typing and without a modal (FR-040, FR-041, FR-071)
-- [ ] T073 [US4] Resolve exactly one `DiffSide` from the cursor position in `crates/pull_request_review/src/comments.rs`, refusing with the reason when the position does not identify a single side — never posted against whichever side the host happens to pick (FR-048)
-- [ ] T074 [US4] Anchor a multi-line selection to one well-defined line and show the reviewer which line before they submit, in `crates/pull_request_review/src/comments.rs` — no range is ever attempted (FR-041, spec multi-line edge case)
-- [ ] T075 [US4] Refuse an empty or whitespace-only body before anything is sent, in `crates/pull_request_review/src/comments.rs` (FR-045)
-- [ ] T076 [US4] Refuse a line that is not part of the pull request's change, with the reason, in `crates/pull_request_review/src/comments.rs` (spec commenting edge case)
-- [ ] T077 [P] [US4] Implement `PullRequestHost::post_comment` in `crates/pull_request_review/src/host_twg.rs` as `comment create --pull-request <id> --text T --path P` with `--line` for the new side or `--from-line` for the old side, exactly one set and never a range — taking option names from the `opts` schema, never the tool's examples (FR-042, FR-048, contracts/twg-cli.md §Trap)
-- [ ] T078 [US4] Acknowledge submission within 100ms, post off the foreground thread, and render the posted comment at the line it was written on attributed to the reviewer, in `crates/pull_request_review/src/comments.rs` (FR-043, FR-067, FR-068)
-- [ ] T079 [US4] On a failed post, state the reason, preserve the reviewer's text, and offer retry or cancel, in `crates/pull_request_review/src/comments.rs` (FR-046)
-- [ ] T080 [US4] Cancelling a draft sends nothing and discards it, in `crates/pull_request_review/src/comments.rs` — nothing is persisted, so quitting with an open comment posts nothing (FR-004, FR-044)
-- [ ] T081 [US4] Check `can_comment` before composing and tell the reviewer why commenting is unavailable on a merged or declined pull request, or one they lack permission on, in `crates/pull_request_review/src/comments.rs` (FR-047)
-- [ ] T082 [US4] Post against the `against_revision` the reviewer was reading, or tell them the pull request moved, in `crates/pull_request_review/src/comments.rs` — never silently attached to a line it was not written about (FR-049)
-- [ ] T083 [P] [US4] Test in `crates/pull_request_review/src/host_twg.rs` that a new-side comment sets `--line` and an old-side comment sets `--from-line`, never both and never a range, and that the resulting anchor has `start_*` null (FR-040, FR-042, FR-048, SC-011)
-- [ ] T084 [P] [US4] Test in `crates/pull_request_review/src/comments.rs` that cancelling posts nothing, that an induced post failure preserves the body and retries successfully, and that two comments submitted in quick succession both post without either overwriting the other (FR-044, FR-046, SC-012, spec quick-succession edge case)
+- [X] T071 [US4] Declare the comment action in `crates/pull_request_review/src/pull_request_review.rs` so it is discoverable in the command palette and bindable in the keymap, with no default binding (FR-040, FR-066)
+- [X] T072 [US4] Open an inline compose editor at the cursor's line in `crates/pull_request_review/src/comments.rs`, without stealing focus from the reviewer's typing and without a modal (FR-040, FR-041, FR-071)
+- [X] T073 [US4] Resolve exactly one `DiffSide` from the cursor position in `crates/pull_request_review/src/comments.rs`, refusing with the reason when the position does not identify a single side — never posted against whichever side the host happens to pick (FR-048)
+- [X] T074 [US4] Anchor a multi-line selection to one well-defined line and show the reviewer which line before they submit, in `crates/pull_request_review/src/comments.rs` — no range is ever attempted (FR-041, spec multi-line edge case)
+- [X] T075 [US4] Refuse an empty or whitespace-only body before anything is sent, in `crates/pull_request_review/src/comments.rs` (FR-045)
+- [X] T076 [US4] Refuse a line that is not part of the pull request's change, with the reason, in `crates/pull_request_review/src/comments.rs` (spec commenting edge case)
+- [X] T077 [P] [US4] Implement `PullRequestHost::post_comment` in `crates/pull_request_review/src/host_twg.rs` as `comment create --pull-request <id> --text T --path P` with `--line` for the new side or `--from-line` for the old side, exactly one set and never a range — taking option names from the `opts` schema, never the tool's examples (FR-042, FR-048, contracts/twg-cli.md §Trap)
+- [X] T078 [US4] Acknowledge submission within 100ms, post off the foreground thread, and render the posted comment at the line it was written on attributed to the reviewer, in `crates/pull_request_review/src/comments.rs` (FR-043, FR-067, FR-068)
+- [X] T079 [US4] On a failed post, state the reason, preserve the reviewer's text, and offer retry or cancel, in `crates/pull_request_review/src/comments.rs` (FR-046)
+- [X] T080 [US4] Cancelling a draft sends nothing and discards it, in `crates/pull_request_review/src/comments.rs` — nothing is persisted, so quitting with an open comment posts nothing (FR-004, FR-044)
+- [X] T081 [US4] Check `can_comment` before composing and tell the reviewer why commenting is unavailable on a merged or declined pull request, or one they lack permission on, in `crates/pull_request_review/src/comments.rs` (FR-047)
+- [X] T082 [US4] Post against the `against_revision` the reviewer was reading, or tell them the pull request moved, in `crates/pull_request_review/src/comments.rs` — never silently attached to a line it was not written about (FR-049)
+- [X] T083 [P] [US4] Test in `crates/pull_request_review/src/host_twg.rs` that a new-side comment sets `--line` and an old-side comment sets `--from-line`, never both and never a range, and that the resulting anchor has `start_*` null (FR-040, FR-042, FR-048, SC-011)
+- [X] T084 [P] [US4] Test in `crates/pull_request_review/src/comments.rs` that cancelling posts nothing, that an induced post failure preserves the body and retries successfully, and that two comments submitted in quick succession both post without either overwriting the other (FR-044, FR-046, SC-012, spec quick-succession edge case)
 
 **Checkpoint**: Reading has become reviewing. Stories 1–4 replace the browser entirely for the common case.
 
@@ -247,15 +247,15 @@ set and order match each choice; then reopen the project and confirm the choices
 
 **Depends on**: User Story 1 (the list it narrows).
 
-- [ ] T085 [US5] Read and write `ListViewState` through `db::kvp` (`write_kvp`/`read_kvp`) under a feature-namespaced key including the worktree identity, in `crates/pull_request_review/src/state.rs`, falling back to defaults on unreadable or unparseable stored state (FR-021, research.md §8)
-- [ ] T086 [US5] Write persisted state after a change settles rather than on every keystroke, in `crates/pull_request_review/src/state.rs`, so persistence never blocks the foreground thread (FR-067, data-model.md rules)
-- [ ] T087 [US5] Add the state filter control in `crates/pull_request_review/src/list.rs` defaulting to `OpenAndDraft` and offering `All` (FR-013)
-- [ ] T088 [US5] Apply filters and sort host-side in `crates/pull_request_review/src/host_twg.rs`: `OpenAndDraft` → `--state OPEN` (drafts are open pull requests with `draft: true`), `All` → one call per `OPEN|MERGED|DECLINED|SUPERSEDED` merged, paginating until the filter is satisfied over the whole set rather than filtering a partial page (FR-019, contracts/twg-cli.md §State filter mapping)
-- [ ] T089 [US5] Add the author filter in `crates/pull_request_review/src/list.rs`, clearable, and clear all filters back to the default view in one action (FR-014, FR-016)
-- [ ] T090 [US5] Store `AuthorFilter::Me` as a marker rather than a resolved account id and resolve it to the viewer's **nickname** at call time via `viewer`, in `crates/pull_request_review/src/list.rs` — `--author` matches a nickname (FR-015, contracts/twg-cli.md §Author filter)
-- [ ] T091 [US5] Add the sort direction control in `crates/pull_request_review/src/list.rs`, defaulting to most recent first with a reversible direction and an indicator reflecting the current order (FR-017)
-- [ ] T092 [US5] Show which filters and sort are in effect at all times in `crates/pull_request_review/src/list.rs`, and when they match nothing say so and offer to clear them rather than presenting an unexplained empty list — distinct from the repository having no pull requests at all (FR-018, FR-020, spec no-pull-requests edge case)
-- [ ] T093 [US5] Keep a selected pull request selected across a filter or sort change when it is still listed, without blocking the editor, in `crates/pull_request_review/src/panel.rs` (US5 acceptance scenario 8, FR-067)
+- [X] T085 [US5] Read and write `ListViewState` through `db::kvp` (`write_kvp`/`read_kvp`) under a feature-namespaced key including the worktree identity, in `crates/pull_request_review/src/state.rs`, falling back to defaults on unreadable or unparseable stored state (FR-021, research.md §8)
+- [X] T086 [US5] Write persisted state after a change settles rather than on every keystroke, in `crates/pull_request_review/src/state.rs`, so persistence never blocks the foreground thread (FR-067, data-model.md rules)
+- [X] T087 [US5] Add the state filter control in `crates/pull_request_review/src/list.rs` defaulting to `OpenAndDraft` and offering `All` (FR-013)
+- [X] T088 [US5] Apply filters and sort host-side in `crates/pull_request_review/src/host_twg.rs`: `OpenAndDraft` → `--state OPEN` (drafts are open pull requests with `draft: true`), `All` → one call per `OPEN|MERGED|DECLINED|SUPERSEDED` merged, paginating until the filter is satisfied over the whole set rather than filtering a partial page (FR-019, contracts/twg-cli.md §State filter mapping)
+- [X] T089 [US5] Add the author filter in `crates/pull_request_review/src/list.rs`, clearable, and clear all filters back to the default view in one action (FR-014, FR-016)
+- [X] T090 [US5] Store `AuthorFilter::Me` as a marker rather than a resolved account id and resolve it to the viewer's **nickname** at call time via `viewer`, in `crates/pull_request_review/src/list.rs` — `--author` matches a nickname (FR-015, contracts/twg-cli.md §Author filter)
+- [X] T091 [US5] Add the sort direction control in `crates/pull_request_review/src/list.rs`, defaulting to most recent first with a reversible direction and an indicator reflecting the current order (FR-017)
+- [X] T092 [US5] Show which filters and sort are in effect at all times in `crates/pull_request_review/src/list.rs`, and when they match nothing say so and offer to clear them rather than presenting an unexplained empty list — distinct from the repository having no pull requests at all (FR-018, FR-020, spec no-pull-requests edge case)
+- [X] T093 [US5] Keep a selected pull request selected across a filter or sort change when it is still listed, without blocking the editor, in `crates/pull_request_review/src/panel.rs` (US5 acceptance scenario 8, FR-067)
 - [ ] T094 [P] [US5] Test in `crates/pull_request_review/src/host_twg.rs` that every filter and sort combination lists exactly the matching pull requests drawn from the whole fixture set rather than a partially loaded page (FR-019, SC-007)
 - [ ] T095 [P] [US5] Test in `crates/pull_request_review/src/state.rs` that filters, sort and selected repository round-trip through `db::kvp` and fall back to defaults when the stored value is unparseable (FR-021, SC-008)
 
@@ -274,16 +274,16 @@ one and confirm the reply lands on that thread rather than as a new comment.
 
 **Depends on**: User Story 3 (threads render in the diff) and User Story 4 (the compose surface replies reuse).
 
-- [ ] T096 [P] [US6] Implement `PullRequestHost::comments` in `crates/pull_request_review/src/host_twg.rs` as `comment query <id> -n <high>` with the default 50 raised, parsing `content.raw`, `inline` (`to`/`start_to` new side, `from`/`start_from` old side), `parent`, `deleted` and `pending` — and no resolution field, because none exists (FR-050, FR-054, contracts/twg-cli.md §comment query)
-- [ ] T097 [US6] Build threads from the host's parent links in `crates/pull_request_review/src/comments.rs`, with replies ordered oldest-first (FR-050, FR-051)
-- [ ] T098 [US6] Render threads as collapsible blocks at their anchored lines in the split diff, attributed to their authors, in `crates/pull_request_review/src/comments.rs` — collapsible so they cannot push the code off screen, and with **no** resolve or reopen affordance and no resolved/unresolved styling (FR-050, FR-054)
-- [ ] T099 [US6] Display a multi-line anchor read from the pull request over all the lines it covers, in `crates/pull_request_review/src/comments.rs` — reading a range is in scope even though creating one is not (FR-050, spec existing-range edge case)
-- [ ] T100 [US6] Derive `is_outdated` locally by comparing a thread's anchor against the changeset being shown, in `crates/pull_request_review/src/comments.rs` — marked outdated, never re-anchored to a different line and never dropped (FR-053)
-- [ ] T101 [US6] Show comments with no anchor in the Overview tab in `crates/pull_request_review/src/overview.rs` rather than dropping them (FR-052)
-- [ ] T102 [P] [US6] Add `--reply-to <comment id>` to `post_comment` in `crates/pull_request_review/src/host_twg.rs`, so a reply is posted into its thread (FR-051)
-- [ ] T103 [US6] Add the reply affordance on a thread in `crates/pull_request_review/src/comments.rs`, setting `DraftComment::reply_to` so the reply joins that thread rather than starting a new top-level comment (FR-051)
-- [ ] T104 [US6] Keep the diff readable when comments cannot be loaded, state the reason, and still allow adding a comment, in `crates/pull_request_review/src/comments.rs` (FR-055)
-- [ ] T105 [P] [US6] Test in `crates/pull_request_review/src/comments.rs` that the comment fixtures — an inline single line, an inline range, a reply with `parent` set, and an unanchored comment — produce the expected thread structure and placement, with the range displayed over its full span and the unanchored comment in Overview (FR-050 – FR-052)
+- [X] T096 [P] [US6] Implement `PullRequestHost::comments` in `crates/pull_request_review/src/host_twg.rs` as `comment query <id> -n <high>` with the default 50 raised, parsing `content.raw`, `inline` (`to`/`start_to` new side, `from`/`start_from` old side), `parent`, `deleted` and `pending` — and no resolution field, because none exists (FR-050, FR-054, contracts/twg-cli.md §comment query)
+- [X] T097 [US6] Build threads from the host's parent links in `crates/pull_request_review/src/comments.rs`, with replies ordered oldest-first (FR-050, FR-051)
+- [X] T098 [US6] Render threads as collapsible blocks at their anchored lines in the split diff, attributed to their authors, in `crates/pull_request_review/src/comments.rs` — collapsible so they cannot push the code off screen, and with **no** resolve or reopen affordance and no resolved/unresolved styling (FR-050, FR-054)
+- [X] T099 [US6] Display a multi-line anchor read from the pull request over all the lines it covers, in `crates/pull_request_review/src/comments.rs` — reading a range is in scope even though creating one is not (FR-050, spec existing-range edge case)
+- [X] T100 [US6] Derive `is_outdated` locally by comparing a thread's anchor against the changeset being shown, in `crates/pull_request_review/src/comments.rs` — marked outdated, never re-anchored to a different line and never dropped (FR-053)
+- [X] T101 [US6] Show comments with no anchor in the Overview tab in `crates/pull_request_review/src/overview.rs` rather than dropping them (FR-052)
+- [X] T102 [P] [US6] Add `--reply-to <comment id>` to `post_comment` in `crates/pull_request_review/src/host_twg.rs`, so a reply is posted into its thread (FR-051)
+- [X] T103 [US6] Add the reply affordance on a thread in `crates/pull_request_review/src/comments.rs`, setting `DraftComment::reply_to` so the reply joins that thread rather than starting a new top-level comment (FR-051)
+- [X] T104 [US6] Keep the diff readable when comments cannot be loaded, state the reason, and still allow adding a comment, in `crates/pull_request_review/src/comments.rs` (FR-055)
+- [X] T105 [P] [US6] Test in `crates/pull_request_review/src/comments.rs` that the comment fixtures — an inline single line, an inline range, a reply with `parent` set, and an unanchored comment — produce the expected thread structure and placement, with the range displayed over its full span and the unanchored comment in Overview (FR-050 – FR-052)
 
 **Checkpoint**: All six user stories are independently functional.
 

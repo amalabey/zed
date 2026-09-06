@@ -36,7 +36,10 @@ use crate::host::{
     coordinates_from_remotes,
 };
 use crate::state::{self, ListViewState, PersistedDockPosition};
-use crate::{ClearFilters, DEFAULT_LIST_LIMIT, Refresh, ReverseSort, ToggleFocus, default_host};
+use crate::{
+    AddComment, CancelComment, ClearFilters, DEFAULT_LIST_LIMIT, Refresh, ReverseSort,
+    SubmitComment, ToggleFocus, default_host,
+};
 
 /// How many approval hydration calls are in flight at once.
 ///
@@ -120,6 +123,11 @@ pub struct PullRequestPanel {
     diff_item_id: Option<gpui::EntityId>,
     opening_diff: Option<git::repository::RepoPath>,
     diff_problem: Option<String>,
+    /// The blocks this panel has put into the open diff — the existing threads, and the comment
+    /// being composed.
+    diff_annotations: Option<crate::diff::DiffAnnotations>,
+    comments: Vec<crate::host::CommentThread>,
+    comment_problem: Option<String>,
 
     _list_task: Option<Task<()>>,
     _hydration_task: Option<Task<()>>,
@@ -128,6 +136,8 @@ pub struct PullRequestPanel {
     _detail_task: Option<Task<()>>,
     _files_task: Option<Task<()>>,
     _diff_task: Option<Task<()>>,
+    _comments_task: Option<Task<()>>,
+    _composer_subscription: Option<Subscription>,
     _persist_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -157,6 +167,20 @@ pub fn register(workspace: &mut Workspace) {
         })
         .register_action(|workspace, _: &ReverseSort, _window, cx| {
             with_panel(workspace, cx, |panel, cx| panel.reverse_sort(cx));
+        })
+        .register_action(|workspace, _: &AddComment, window, cx| {
+            let Some(panel) = workspace.panel::<PullRequestPanel>(cx) else {
+                return;
+            };
+            panel.update(cx, |panel, cx| {
+                crate::diff::add_comment(panel, window, cx);
+            });
+        })
+        .register_action(|workspace, _: &SubmitComment, _window, cx| {
+            with_panel(workspace, cx, |panel, cx| panel.submit_comment(cx));
+        })
+        .register_action(|workspace, _: &CancelComment, _window, cx| {
+            with_panel(workspace, cx, |panel, cx| panel.cancel_comment(cx));
         });
 }
 
@@ -219,12 +243,17 @@ impl PullRequestPanel {
             diff_item_id: None,
             opening_diff: None,
             diff_problem: None,
+            diff_annotations: None,
+            comments: Vec::new(),
+            comment_problem: None,
             _list_task: None,
             _hydration_task: None,
             _viewer_task: None,
             _detail_task: None,
             _files_task: None,
             _diff_task: None,
+            _comments_task: None,
+            _composer_subscription: None,
             _persist_task: Task::ready(()),
             _subscriptions: subscriptions,
         };
@@ -546,8 +575,14 @@ impl PullRequestPanel {
         // than letting a stale result arrive and replace the newer selection (FR-026, FR-069).
         self._detail_task = None;
         self._files_task = None;
+        self._comments_task = None;
         self.detail = Load::Idle;
         self.changed_files = Load::Idle;
+        // The previous pull request's comments and diff decorations belong to it, not to the new
+        // selection, so they go rather than being inherited.
+        self.comments.clear();
+        self.comment_problem = None;
+        self.diff_annotations = None;
         self.load_detail(cx);
         cx.notify();
     }
@@ -754,6 +789,163 @@ impl PullRequestPanel {
         cx.notify();
     }
 
+    /// Take ownership of the decorations for a newly-opened diff, and load the comments that belong
+    /// on it.
+    pub fn attach_diff_annotations(
+        &mut self,
+        annotations: crate::diff::DiffAnnotations,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_annotations = Some(annotations);
+        self.load_comments(cx);
+        cx.notify();
+    }
+
+    pub fn diff_annotations_mut(&mut self) -> Option<&mut crate::diff::DiffAnnotations> {
+        self.diff_annotations.as_mut()
+    }
+
+    /// What a comment needs to know about the pull request it is being written on.
+    ///
+    /// `None` when there is nothing to comment on, or when commenting is unavailable — in which
+    /// case the reason is reported here rather than after the reviewer has typed (FR-047).
+    pub fn compose_context(&mut self) -> Option<crate::comments::ComposeContext> {
+        let host = self.host.clone()?;
+        let detail = self.detail.ready()?;
+        Some(crate::comments::ComposeContext {
+            pull_request: detail.summary.id.clone(),
+            host,
+            // The revision the reviewer is reading, which is what the comment is posted against
+            // (FR-049).
+            against_revision: detail.source.revision.clone(),
+            can_comment: detail.can_comment,
+            is_open: matches!(detail.summary.state, crate::host::PullRequestState::Open),
+        })
+    }
+
+    /// Watch a composer so a posted comment appears at its line, and a cancelled one leaves nothing
+    /// behind (FR-043, FR-044).
+    pub fn observe_composer(
+        &mut self,
+        composer: Entity<crate::comments::Composer>,
+        cx: &mut Context<Self>,
+    ) {
+        let subscription = cx.subscribe(&composer, |panel, _composer, event, cx| match event {
+            crate::comments::ComposerEvent::Posted(thread) => {
+                panel.comments.push(thread.clone());
+                if let Some(annotations) = panel.diff_annotations.as_mut() {
+                    annotations.end_compose(cx);
+                }
+                panel.redraw_comment_blocks(cx);
+                cx.notify();
+            }
+            crate::comments::ComposerEvent::Cancelled => {
+                // Nothing is sent and nothing is kept. There was never anywhere for it to be
+                // written down.
+                if let Some(annotations) = panel.diff_annotations.as_mut() {
+                    annotations.end_compose(cx);
+                }
+                cx.notify();
+            }
+        });
+        self._composer_subscription = Some(subscription);
+    }
+
+    /// Load the comments already on the selected pull request (FR-050).
+    pub fn load_comments(&mut self, cx: &mut Context<Self>) {
+        let (Some(host), Some(id)) = (self.host.clone(), self.selected.clone()) else {
+            return;
+        };
+        self.comment_problem = None;
+        let task = host.comments(&id, cx);
+        self._comments_task = Some(cx.spawn(async move |panel, cx| {
+            let loaded = task.await;
+            panel
+                .update(cx, |panel, cx| {
+                    if panel.selected.as_ref() != Some(&id) {
+                        return;
+                    }
+                    match loaded {
+                        Ok(threads) => {
+                            panel.comments = threads;
+                            panel.redraw_comment_blocks(cx);
+                        }
+                        Err(error) if error.is_cancelled() => {}
+                        Err(error) => {
+                            // The diff stays readable and a comment can still be added; only the
+                            // existing threads are missing, and the reason is stated (FR-055).
+                            panel.comment_problem = Some(error.message());
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+        }));
+    }
+
+    pub fn comments(&self) -> &[crate::host::CommentThread] {
+        &self.comments
+    }
+
+    pub fn submit_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = self
+            .diff_annotations
+            .as_ref()
+            .and_then(|annotations| annotations.composer().cloned())
+        else {
+            return;
+        };
+        composer.update(cx, |composer, cx| composer.submit(cx));
+    }
+
+    pub fn cancel_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = self
+            .diff_annotations
+            .as_ref()
+            .and_then(|annotations| annotations.composer().cloned())
+        else {
+            return;
+        };
+        composer.update(cx, |composer, cx| composer.cancel(cx));
+    }
+
+    pub fn comment_problem(&self) -> Option<&str> {
+        self.comment_problem.as_deref()
+    }
+
+    /// Put the current threads back into the open diff, marking the outdated ones.
+    fn redraw_comment_blocks(&mut self, cx: &mut Context<Self>) {
+        let Some(context) = self.compose_context() else {
+            return;
+        };
+        let reply_context = crate::comments::ThreadReplyContext {
+            pull_request: context.pull_request,
+            host: context.host,
+            against_revision: context.against_revision,
+            can_comment: context.can_comment,
+            is_open: context.is_open,
+        };
+
+        // Outdated is derived locally by comparing each anchor against the changeset actually being
+        // shown — never reported by the host, never used to move a thread (FR-053).
+        let shown = self
+            .changed_files
+            .ready()
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut threads = self.comments.clone();
+        crate::comments::mark_outdated(&mut threads, &|anchor| shown.contains(&anchor.path));
+
+        if let Some(annotations) = self.diff_annotations.as_mut() {
+            annotations.set_threads(threads, Some(reply_context), cx);
+        }
+    }
+
     fn persist(&mut self, cx: &mut Context<Self>) {
         // Replacing the task drops the previous one, which is what debounces the write. Persistence
         // is never on the path of a frame (FR-067).
@@ -901,7 +1093,9 @@ impl Panel for PullRequestPanel {
 mod tests {
     use super::*;
     use crate::changeset::ChangeKind;
-    use crate::host::{BranchRef, CommentThread, DraftComment, PullRequestState, Verdict};
+    use crate::host::{
+        BranchRef, CommentId, CommentThread, DraftComment, PullRequestState, Verdict,
+    };
     use chrono::{TimeZone as _, Utc};
     use gpui::{TestAppContext, VisualTestContext};
     use std::cell::{Cell, RefCell};
@@ -919,6 +1113,8 @@ mod tests {
         /// Numbers whose `detail` never resolves, standing in for a call still in flight.
         pending_details: Rc<RefCell<Vec<u64>>>,
         posted: Rc<RefCell<Vec<DraftComment>>>,
+        post_fails: Rc<Cell<bool>>,
+        threads: Rc<RefCell<Vec<CommentThread>>>,
     }
 
     impl FakeHost {
@@ -952,6 +1148,8 @@ mod tests {
                 list_calls: Rc::new(Cell::new(0)),
                 pending_details: Rc::new(RefCell::new(Vec::new())),
                 posted: Rc::new(RefCell::new(Vec::new())),
+                post_fails: Rc::new(Cell::new(false)),
+                threads: Rc::new(RefCell::new(Vec::new())),
             }
         }
 
@@ -1044,7 +1242,8 @@ mod tests {
             _id: &PullRequestId,
             cx: &App,
         ) -> Task<Result<Vec<CommentThread>, HostError>> {
-            cx.background_spawn(async move { Ok(Vec::new()) })
+            let threads = self.threads.borrow().clone();
+            cx.background_spawn(async move { Ok(threads) })
         }
 
         fn post_comment(
@@ -1054,11 +1253,32 @@ mod tests {
             cx: &App,
         ) -> Task<Result<CommentThread, HostError>> {
             self.posted.borrow_mut().push(draft.clone());
-            cx.background_spawn(async move {
-                Err(HostError::Unreachable {
-                    detail: "the fake host does not echo comments".into(),
-                })
-            })
+            if self.post_fails.get() {
+                return cx.background_spawn(async move {
+                    Err(HostError::Unreachable {
+                        detail: "the network is down".into(),
+                    })
+                });
+            }
+            let echoed = CommentThread {
+                id: CommentId(format!("posted-{}", self.posted.borrow().len())),
+                anchor: Some(crate::host::CommentAnchor {
+                    path: draft.path.clone(),
+                    side: draft.side,
+                    lines: draft.line..=draft.line,
+                }),
+                author: Identity {
+                    display_name: Some("Ada Lovelace".into()),
+                    ..Default::default()
+                },
+                body: draft.body,
+                created_at: fixed_clock(),
+                replies: Vec::new(),
+                is_deleted: false,
+                is_pending: false,
+                is_outdated: false,
+            };
+            cx.background_spawn(async move { Ok(echoed) })
         }
 
         fn viewer(&self, cx: &App) -> Task<Result<Identity, HostError>> {
@@ -1395,6 +1615,365 @@ mod tests {
             stored.dock_position,
             Some(PersistedDockPosition::Bottom),
             "the position must be readable back after a restart"
+        );
+    }
+
+    fn anchored_thread(id: &str, path: &str, line: u32, body: &str) -> CommentThread {
+        CommentThread {
+            id: CommentId(id.into()),
+            anchor: Some(crate::host::CommentAnchor {
+                path: git::repository::RepoPath::new(path).expect("a valid path"),
+                side: crate::host::DiffSide::New,
+                lines: line..=line,
+            }),
+            author: Identity {
+                display_name: Some("Grace Hopper".into()),
+                ..Default::default()
+            },
+            body: body.into(),
+            created_at: fixed_clock(),
+            replies: Vec::new(),
+            is_deleted: false,
+            is_pending: false,
+            is_outdated: false,
+        }
+    }
+
+    /// FR-050, FR-055: selecting a pull request loads the comments already on it, and a failure
+    /// there leaves the rest usable.
+    #[gpui::test]
+    async fn selecting_a_pull_request_loads_its_existing_comments(cx: &mut TestAppContext) {
+        let host = FakeHost::with_rows(1);
+        *host.threads.borrow_mut() = vec![
+            anchored_thread("1", "a.rs", 3, "Why here?"),
+            // An unanchored comment belongs in Overview, and must survive the round trip.
+            CommentThread {
+                anchor: None,
+                ..anchored_thread("2", "a.rs", 0, "General note")
+            },
+        ];
+        let (panel, _host, mut cx) = setup(cx, host).await;
+
+        let id = PullRequestId {
+            number: 1,
+            repository: repository(),
+        };
+        panel.update(&mut cx, |panel, cx| panel.select(id, cx));
+        cx.executor().run_until_parked();
+        // Comments load once a diff is opened; before that there is nothing to anchor them to.
+        panel.update(&mut cx, |panel, cx| panel.load_comments(cx));
+        cx.executor().run_until_parked();
+
+        panel.read_with(&cx, |panel, _cx| {
+            assert_eq!(panel.comments().len(), 2);
+            assert_eq!(
+                crate::comments::unanchored(panel.comments()).len(),
+                1,
+                "the unanchored comment must be kept for the Overview tab"
+            );
+            assert_eq!(panel.comment_problem(), None);
+        });
+    }
+
+    /// FR-044: cancelling posts nothing.
+    #[gpui::test]
+    async fn cancelling_a_comment_posts_nothing(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+
+        panel.update(&mut cx, |panel, cx| {
+            panel.select(
+                PullRequestId {
+                    number: 1,
+                    repository: repository(),
+                },
+                cx,
+            )
+        });
+        cx.executor().run_until_parked();
+
+        // No diff is open, so there is no composer — and cancelling must still be harmless rather
+        // than a panic.
+        panel.update(&mut cx, |panel, cx| panel.cancel_comment(cx));
+        cx.executor().run_until_parked();
+
+        assert!(
+            host.posted.borrow().is_empty(),
+            "nothing may reach the host without an explicit submit"
+        );
+    }
+
+    /// FR-046, SC-012: an induced failure preserves the body, and retrying posts it.
+    ///
+    /// Driven through the composer directly: the block placement needs a laid-out diff editor,
+    /// which is the part this test is not about.
+    #[gpui::test]
+    async fn a_failed_post_preserves_the_body_and_retries_successfully(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        let id = PullRequestId {
+            number: 1,
+            repository: repository(),
+        };
+        panel.update(&mut cx, |panel, cx| panel.select(id, cx));
+        cx.executor().run_until_parked();
+
+        let context = panel
+            .update(&mut cx, |panel, _cx| panel.compose_context())
+            .expect("an open pull request can be commented on");
+
+        let target = crate::comments::CursorTarget {
+            path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+            side: Some(crate::host::DiffSide::New),
+            line: 12,
+            is_part_of_change: true,
+            selection: 12..=12,
+        };
+
+        host.post_fails.set(true);
+        let composer = cx
+            .update(|window, cx| {
+                crate::comments::Composer::open(context, &target, None, window, cx)
+            })
+            .expect("the composer should open");
+
+        composer.update_in(&mut cx, |composer, window, cx| {
+            composer.editor().update(cx, |editor, cx| {
+                editor.set_text("Needs a comment", window, cx)
+            });
+            composer.submit(cx);
+        });
+        cx.executor().run_until_parked();
+
+        composer.read_with(&cx, |composer, cx| {
+            match composer.status() {
+                crate::comments::ComposeStatus::Failed(reason) => {
+                    assert!(
+                        reason.contains("network"),
+                        "the reason must be stated: {reason}"
+                    );
+                }
+                other => panic!("expected a stated failure, got {other:?}"),
+            }
+            assert_eq!(
+                composer.editor().read(cx).text(cx),
+                "Needs a comment",
+                "the reviewer's text must survive a failed post"
+            );
+        });
+        assert_eq!(host.posted.borrow().len(), 1);
+
+        // Retry, with the host cooperating this time.
+        host.post_fails.set(false);
+        composer.update(&mut cx, |composer, cx| composer.submit(cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(host.posted.borrow().len(), 2, "the retry sends it again");
+        let posted = host.posted.borrow();
+        let last = posted.last().expect("a posted draft");
+        assert_eq!(last.body, "Needs a comment");
+        assert_eq!(last.line, 12);
+        assert_eq!(last.side, crate::host::DiffSide::New);
+        assert!(
+            last.reply_to.is_none(),
+            "a top-level comment is not a reply"
+        );
+    }
+
+    /// FR-045: an empty body never reaches the host.
+    #[gpui::test]
+    async fn an_empty_comment_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        panel.update(&mut cx, |panel, cx| {
+            panel.select(
+                PullRequestId {
+                    number: 1,
+                    repository: repository(),
+                },
+                cx,
+            )
+        });
+        cx.executor().run_until_parked();
+
+        let context = panel
+            .update(&mut cx, |panel, _cx| panel.compose_context())
+            .expect("an open pull request can be commented on");
+        let target = crate::comments::CursorTarget {
+            path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+            side: Some(crate::host::DiffSide::New),
+            line: 1,
+            is_part_of_change: true,
+            selection: 1..=1,
+        };
+
+        let composer = cx
+            .update(|window, cx| {
+                crate::comments::Composer::open(context, &target, None, window, cx)
+            })
+            .expect("the composer should open");
+
+        composer.update_in(&mut cx, |composer, window, cx| {
+            composer
+                .editor()
+                .update(cx, |editor, cx| editor.set_text("   \n  ", window, cx));
+            assert!(!composer.can_submit(cx), "whitespace is not a comment");
+            composer.submit(cx);
+        });
+        cx.executor().run_until_parked();
+
+        assert!(
+            host.posted.borrow().is_empty(),
+            "an empty body must be refused before anything is sent"
+        );
+    }
+
+    /// SC-012, the quick-succession edge case: two comments both post, neither overwriting the
+    /// other.
+    #[gpui::test]
+    async fn two_comments_in_quick_succession_both_post(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        panel.update(&mut cx, |panel, cx| {
+            panel.select(
+                PullRequestId {
+                    number: 1,
+                    repository: repository(),
+                },
+                cx,
+            )
+        });
+        cx.executor().run_until_parked();
+
+        for line in [10u32, 20] {
+            let context = panel
+                .update(&mut cx, |panel, _cx| panel.compose_context())
+                .expect("an open pull request can be commented on");
+            let target = crate::comments::CursorTarget {
+                path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+                side: Some(crate::host::DiffSide::New),
+                line,
+                is_part_of_change: true,
+                selection: line..=line,
+            };
+            let composer = cx
+                .update(|window, cx| {
+                    crate::comments::Composer::open(context, &target, None, window, cx)
+                })
+                .expect("the composer should open");
+            composer.update_in(&mut cx, |composer, window, cx| {
+                composer.editor().update(cx, |editor, cx| {
+                    editor.set_text(format!("Comment on {line}"), window, cx)
+                });
+                composer.submit(cx);
+            });
+        }
+        cx.executor().run_until_parked();
+
+        let posted = host.posted.borrow();
+        assert_eq!(posted.len(), 2, "both comments must post");
+        let lines: Vec<u32> = posted.iter().map(|draft| draft.line).collect();
+        assert!(lines.contains(&10) && lines.contains(&20));
+        let bodies: Vec<&str> = posted.iter().map(|draft| draft.body.as_str()).collect();
+        assert!(
+            bodies.contains(&"Comment on 10") && bodies.contains(&"Comment on 20"),
+            "neither may overwrite the other: {bodies:?}"
+        );
+    }
+
+    /// FR-047: a closed pull request cannot be commented on, and the reviewer is told before they
+    /// type rather than after they submit.
+    #[gpui::test]
+    async fn a_closed_pull_request_offers_no_compose_context(cx: &mut TestAppContext) {
+        let (panel, _host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        let id = PullRequestId {
+            number: 1,
+            repository: repository(),
+        };
+        panel.update(&mut cx, |panel, cx| panel.select(id, cx));
+        cx.executor().run_until_parked();
+
+        // The fake host lists open pull requests, so make this one merged the way the host would.
+        panel.update(&mut cx, |panel, _cx| {
+            if let Load::Ready(detail) = &mut panel.detail {
+                detail.summary.state = PullRequestState::Merged;
+                detail.can_comment = false;
+            }
+        });
+
+        let context = panel
+            .update(&mut cx, |panel, _cx| panel.compose_context())
+            .expect("a context is still produced; it is the flags that refuse");
+        assert!(!context.is_open);
+        assert!(!context.can_comment);
+
+        let target = crate::comments::CursorTarget {
+            path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+            side: Some(crate::host::DiffSide::New),
+            line: 1,
+            is_part_of_change: true,
+            selection: 1..=1,
+        };
+        let refusal = cx
+            .update(|window, cx| {
+                crate::comments::Composer::open(context, &target, None, window, cx)
+            })
+            .expect_err("a merged pull request must refuse before the editor opens");
+        assert_eq!(
+            refusal,
+            crate::comments::ComposeRefusal::CommentingUnavailable {
+                reason: crate::comments::UnavailableReason::NotOpen
+            }
+        );
+    }
+
+    /// FR-051: a reply carries the thread it belongs to.
+    #[gpui::test]
+    async fn a_reply_is_posted_into_its_thread(cx: &mut TestAppContext) {
+        let (panel, host, mut cx) = setup(cx, FakeHost::with_rows(1)).await;
+        panel.update(&mut cx, |panel, cx| {
+            panel.select(
+                PullRequestId {
+                    number: 1,
+                    repository: repository(),
+                },
+                cx,
+            )
+        });
+        cx.executor().run_until_parked();
+
+        let context = panel
+            .update(&mut cx, |panel, _cx| panel.compose_context())
+            .expect("an open pull request can be commented on");
+        let target = crate::comments::CursorTarget {
+            path: git::repository::RepoPath::new("a.rs").expect("a valid path"),
+            side: Some(crate::host::DiffSide::New),
+            line: 3,
+            is_part_of_change: true,
+            selection: 3..=3,
+        };
+        let composer = cx
+            .update(|window, cx| {
+                crate::comments::Composer::open(
+                    context,
+                    &target,
+                    Some(CommentId("9001".into())),
+                    window,
+                    cx,
+                )
+            })
+            .expect("the composer should open");
+
+        composer.update_in(&mut cx, |composer, window, cx| {
+            assert!(composer.is_reply());
+            composer
+                .editor()
+                .update(cx, |editor, cx| editor.set_text("Agreed", window, cx));
+            composer.submit(cx);
+        });
+        cx.executor().run_until_parked();
+
+        let posted = host.posted.borrow();
+        assert_eq!(
+            posted.last().and_then(|draft| draft.reply_to.clone()),
+            Some(CommentId("9001".into())),
+            "the reply must join its thread rather than starting a new one"
         );
     }
 

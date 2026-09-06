@@ -489,6 +489,10 @@ mod tests {
         }
 
         fn git(&self, args: &[&str]) -> String {
+            // Blocking is correct here: this builds the fixture repository before any async work
+            // starts, so there is no executor thread to hold up, and an async spawn would only
+            // make the setup harder to read.
+            #[allow(clippy::disallowed_methods)]
             let output = std::process::Command::new("git")
                 .args(args)
                 .current_dir(&self.directory)

@@ -331,7 +331,7 @@ What *was* verified without a running Zed:
   message, driven from the recorded failure fixtures. What T113 adds is inducing them against the real
   tool on a dock-launched Zed, which is what FR-062a exists for.
 
-- [ ] T115 Open the pull request with an imperative, correctly capitalised title, no conventional-commit prefix, no trailing punctuation, and a closing `Release Notes:` section stating which constitution principles are engaged and carrying the Principle I justification for the new crate and the two mandated traits (CLAUDE.md PR hygiene, constitution gates 1 and 8)
+- [X] T115 Open the pull request with an imperative, correctly capitalised title, no conventional-commit prefix, no trailing punctuation, and a closing `Release Notes:` section stating which constitution principles are engaged and carrying the Principle I justification for the new crate and the two mandated traits (CLAUDE.md PR hygiene, constitution gates 1 and 8)
 
 ---
 

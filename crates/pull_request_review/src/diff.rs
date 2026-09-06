@@ -18,7 +18,7 @@ use editor::display_map::{
 };
 use editor::{Editor, SplittableEditor};
 use git::repository::{CommitDetails, RepoPath};
-use gpui::{App, AppContext as _, Context, Entity, IntoElement, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, Focusable as _, IntoElement, Task, Window};
 use project::git_store::{CommitDiff, CommitFile};
 use util::ResultExt as _;
 
@@ -257,6 +257,15 @@ impl DiffAnnotations {
         );
         self.composer = Some(composer.clone());
         self.composer_block = id;
+
+        // Focus only now. Until the block is inserted the composer's element is not in the
+        // window's focus tree, so focusing it earlier is silently dropped and the reviewer's
+        // keystrokes keep going to the read-only diff editor underneath.
+        //
+        // Focus goes to the compose editor because the reviewer just asked to write; what FR-071
+        // forbids is taking focus from typing they did not interrupt themselves.
+        let handle = composer.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
 
         Ok(composer)
     }

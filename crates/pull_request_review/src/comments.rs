@@ -308,6 +308,9 @@ pub fn verdict_label(verdict: Verdict) -> &'static str {
     }
 }
 
+/// How tall the compose editor may grow before it scrolls internally.
+const COMPOSER_MAX_LINES: usize = 6;
+
 /// Where a comment being composed has got to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeStatus {
@@ -380,7 +383,10 @@ impl Composer {
 
         let composer = cx.new(|cx| {
             let editor = cx.new(|cx| {
-                let mut editor = Editor::multi_line(window, cx);
+                // Auto-height so the composer grows with the comment instead of scrolling inside a
+                // fixed box. `multi_line` is a full-mode editor and does not size itself to its
+                // content, which inside a block means an unusable one-line window.
+                let mut editor = Editor::auto_height(1, COMPOSER_MAX_LINES, window, cx);
                 editor.set_placeholder_text("Leave a comment", window, cx);
                 editor
             });
@@ -407,11 +413,9 @@ impl Composer {
             }
         });
 
-        // Focus goes to the compose editor because the reviewer just asked to write. What FR-071
-        // forbids is taking focus from typing they did not interrupt themselves.
-        let handle = composer.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-
+        // Focus is *not* taken here. The composer's element does not exist until its block has
+        // been inserted into the diff editor, and focusing a handle that is not yet in the window's
+        // focus tree does nothing. The caller focuses once the block is in place.
         Ok(composer)
     }
 
@@ -703,6 +707,9 @@ impl Render for ThreadBlock {
         let can_reply = self.context.is_some() && self.reply.is_none();
 
         v_flex()
+            // Same reason as the composer: without this the Reply button is unclickable, because
+            // the diff editor underneath takes the click.
+            .block_mouse_except_scroll()
             .p_1()
             .gap_1()
             .border_l_2()
@@ -795,6 +802,11 @@ impl Render for Composer {
         let can_submit = self.can_submit(cx);
 
         v_flex()
+            // The composer sits in a block *inside* the diff editor. Without this, mouse events
+            // pass through to the diff editor beneath — which is read-only — so the composer
+            // renders but the caret never enters it and nothing can be typed.
+            .block_mouse_except_scroll()
+            .track_focus(&self.editor.focus_handle(cx))
             .p_2()
             .gap_1()
             .border_1()

@@ -1,0 +1,36 @@
+{
+  "type": "pullrequest",
+  "id": 102,
+  "title": "WIP: rework the settings schema",
+  "state": "OPEN",
+  "draft": true,
+  "comment_count": 0,
+  "created_on": "2026-09-04T11:00:00.000000+00:00",
+  "updated_on": "2026-09-06T07:45:00.000000+00:00",
+  "content": {
+    "type": "rendered",
+    "raw": "",
+    "markup": "markdown",
+    "html": ""
+  },
+  "author": {
+    "type": "user",
+    "display_name": "Grace Hopper",
+    "nickname": "grace",
+    "account_id": "712020:bbbb-2222",
+    "links": {}
+  },
+  "source": {
+    "branch": { "name": "grace/settings-schema" },
+    "commit": { "hash": "beefcafe1234" },
+    "repository": { "full_name": "atlassian/twg-cli" }
+  },
+  "destination": {
+    "branch": { "name": "main" },
+    "commit": { "hash": "0d1c2b3a4958" },
+    "repository": { "full_name": "atlassian/twg-cli" }
+  },
+  "links": { "html": { "href": "https://example.invalid/atlassian/twg-cli/pull-requests/102" } },
+  "reviewers": [],
+  "participants": []
+}

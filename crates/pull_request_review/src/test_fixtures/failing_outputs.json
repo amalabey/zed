@@ -1,0 +1,86 @@
+[
+  {
+    "name": "not authenticated",
+    "stdout": "",
+    "stderr": "Error: you are not logged in. Run `twg auth login` first.",
+    "exit_code": 1,
+    "expected": "NotAuthenticated"
+  },
+  {
+    "name": "credential expired",
+    "stdout": "",
+    "stderr": "Error: your session token has expired, please re-authenticate",
+    "exit_code": 1,
+    "expected": "CredentialExpired"
+  },
+  {
+    "name": "permission denied",
+    "stdout": "",
+    "stderr": "Error: 403 Forbidden — you do not have access to this repository",
+    "exit_code": 1,
+    "expected": "PermissionDenied"
+  },
+  {
+    "name": "unreachable",
+    "stdout": "",
+    "stderr": "Error: dial tcp: lookup api.bitbucket.org: no such host",
+    "exit_code": 1,
+    "expected": "Unreachable"
+  },
+  {
+    "name": "rate limited",
+    "stdout": "",
+    "stderr": "Error: 429 Too Many Requests — rate limit exceeded, retry later",
+    "exit_code": 1,
+    "expected": "RateLimited"
+  },
+  {
+    "name": "unexpected response: non-zero exit with unrecognised output",
+    "stdout": "",
+    "stderr": "panic: runtime error: index out of range [7] with length 3",
+    "exit_code": 2,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: truncated json on a successful exit",
+    "stdout": "{",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: an object where a list was promised",
+    "stdout": "{\"message\": \"no pull requests\"}",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: empty stdout on a successful exit",
+    "stdout": "",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: human output leaking past the json flag",
+    "stdout": "Update available: 1.0.1 -> 1.2.7\nID  TITLE\n101 Add history view\n",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: a lone byte-order mark",
+    "stdout": "﻿",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  },
+  {
+    "name": "unexpected response: deeply nested nonsense that still parses as json",
+    "stdout": "[[[[[[1]]]]]]",
+    "stderr": "",
+    "exit_code": 0,
+    "expected": "UnexpectedResponse"
+  }
+]

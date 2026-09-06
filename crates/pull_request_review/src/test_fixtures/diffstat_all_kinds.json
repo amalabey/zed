@@ -1,0 +1,58 @@
+[
+  {
+    "type": "diffstat",
+    "status": "added",
+    "lines_added": 6,
+    "lines_removed": 0,
+    "old": null,
+    "new": { "type": "commit_file", "path": ".changeset/public-code-review-skill.md" }
+  },
+  {
+    "type": "diffstat",
+    "status": "modified",
+    "lines_added": 42,
+    "lines_removed": 17,
+    "old": { "type": "commit_file", "path": "crates/git_ui/src/git_panel.rs" },
+    "new": { "type": "commit_file", "path": "crates/git_ui/src/git_panel.rs" }
+  },
+  {
+    "type": "diffstat",
+    "status": "removed",
+    "lines_added": 0,
+    "lines_removed": 108,
+    "old": { "type": "commit_file", "path": "crates/git_ui/src/legacy_history.rs" },
+    "new": null
+  },
+  {
+    "type": "diffstat",
+    "status": "renamed",
+    "lines_added": 3,
+    "lines_removed": 3,
+    "old": { "type": "commit_file", "path": "packages/sdk/src/help/matching.ts" },
+    "new": { "type": "commit_file", "path": "packages/sdk/src/help/skills/matching.ts" }
+  },
+  {
+    "type": "diffstat",
+    "status": "modified",
+    "lines_added": 0,
+    "lines_removed": 0,
+    "old": { "type": "commit_file", "path": "assets/icons/logo.png" },
+    "new": { "type": "commit_file", "path": "assets/icons/logo.png" }
+  },
+  {
+    "type": "diffstat",
+    "status": "a_status_this_build_does_not_know",
+    "lines_added": 1,
+    "lines_removed": 1,
+    "old": { "type": "commit_file", "path": "docs/unknown-status.md" },
+    "new": { "type": "commit_file", "path": "docs/unknown-status.md" }
+  },
+  {
+    "type": "diffstat",
+    "status": "modified",
+    "lines_added": 1,
+    "lines_removed": 1,
+    "old": null,
+    "new": null
+  }
+]

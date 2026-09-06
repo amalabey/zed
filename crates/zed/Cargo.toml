@@ -183,6 +183,7 @@ project_panel.workspace = true
 project_symbols.workspace = true
 prompt_store.workspace = true
 proto.workspace = true
+pull_request_review.workspace = true
 recent_projects.workspace = true
 release_channel.workspace = true
 remote.workspace = true

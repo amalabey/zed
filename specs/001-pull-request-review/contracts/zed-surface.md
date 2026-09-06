@@ -18,13 +18,27 @@ assumed.
 **Additive**: yes — new lines only. No existing dependency version changes (FR-079).
 **Conflict risk**: low. Both are long alphabetical lists where additions merge cleanly.
 
-### 2. `crates/zed/Cargo.toml`
+### 2. `Cargo.lock`
+
+**Change**: the lock entries for the new crate and for the workspace crates that now depend on it.
+**Additive**: yes — new package stanzas and new dependency lines. No existing version is changed
+(FR-079), which is what keeps this from being a dependency bump in disguise.
+**Why not a copy**: not applicable; the lock file is generated. It is enumerated because it is a
+pre-existing tracked file, and a gate that quietly ignored generated files would be a gate with a
+hole in it.
+**Conflict risk**: low, and mechanical. Lock conflicts resolve by regenerating.
+
+> Missed in the original enumeration, which listed `Cargo.toml` but not the lock file it implies.
+> The gate caught it on the first run after the crate was added — which is the argument for FR-078a
+> in miniature: the allowlist was wrong, and only automatic enforcement said so.
+
+### 3. `crates/zed/Cargo.toml`
 
 **Change**: one dependency line on the new crate.
 **Additive**: yes.
 **Conflict risk**: low.
 
-### 3. `crates/zed/src/main.rs`
+### 4. `crates/zed/src/main.rs`
 
 **Change**: one line, `pull_request_review::init(cx);`, beside the existing `git_ui::init(cx);` at
 `main.rs:772`.
@@ -36,7 +50,7 @@ of sibling statements is the cheapest possible conflict to resolve.
 > `crates/zed/src/visual_test_runner.rs:212`. The feature registers in `main.rs` **only**. Registering in
 > three places would triple the allowlist for no benefit; the visual test runner does not need this panel.
 
-### 4. `crates/git_ui/src/commit_view.rs`
+### 5. `crates/git_ui/src/commit_view.rs`
 
 **Change**: make `CommitView::new` (`:291`) `pub`; add one `pub fn` accessor returning the view's
 `SplittableEditor`.
@@ -55,7 +69,7 @@ added, modified, deleted, binary and shallow-boundary files.
 > reverting to a parallel implementation in the feature crate is the documented escape hatch
 > (research.md §5).
 
-### 5. `crates/project/src/git_store.rs`
+### 6. `crates/project/src/git_store.rs`
 
 **Change**: add one `pub fn` loading blob content for a list of `<revision>:<path>` specifiers, returning
 an explicit unsupported error for remote repositories.
@@ -70,6 +84,25 @@ cleanly far more often than an edit inside existing logic.
 > handling — two more high-conflict allowlist entries. Instead the method fails explicitly for remote
 > repositories, which is what the constitution requires of a surface that cannot work remotely
 > (research.md §3).
+
+### 7. `README.md`
+
+**Change**: the two-line `> [!IMPORTANT]` review-confirmation banner at the top of the file.
+**Additive**: yes — two prepended lines, no existing content altered.
+**Why not a copy**: not applicable; this is not a code reuse decision. `CLAUDE.md` mandates the banner on
+any branch with source changes, and states that only the human author may remove it — it is the manual
+acknowledgement that the change was reviewed.
+**Conflict risk**: negligible, and self-clearing. The banner is *designed* to be deleted before the pull
+request is submitted, so unlike every other entry on this list it does not persist into the merged fork.
+It is enumerated rather than exempted in the check so that the allowlist stays the single place the change
+surface is described.
+
+> **A governance discrepancy, raised rather than resolved in code.** Constitution Principle VI would
+> otherwise forbid this file, and the constitution's Governance section says it wins over `CLAUDE.md` and
+> that the conflict must be raised. It is raised here. The entry is granted because the banner is a
+> transient process marker rather than the permanent divergence FR-078 exists to prevent, and because
+> removing it is explicitly not the agent's decision to make. If the repository would rather the gate
+> never see it, the alternative is an exemption in `script/check-fork-surface` for `README.md`.
 
 ## Files the feature adds
 

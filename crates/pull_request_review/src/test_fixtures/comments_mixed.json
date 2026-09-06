@@ -1,0 +1,190 @@
+[
+  {
+    "type": "pullrequest_comment",
+    "id": 9001,
+    "created_on": "2026-09-02T10:15:00.000000+00:00",
+    "updated_on": "2026-09-02T10:15:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "user": {
+      "display_name": "Grace Hopper",
+      "nickname": "grace",
+      "account_id": "712020:bbbb-2222",
+      "links": { "avatar": { "href": "https://example.invalid/avatar/grace.png" } }
+    },
+    "content": { "type": "rendered", "raw": "This wants a comment about why.", "markup": "markdown" },
+    "inline": {
+      "path": "crates/git_ui/src/git_panel.rs",
+      "from": null,
+      "to": 239,
+      "start_from": null,
+      "start_to": null
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9002,
+    "created_on": "2026-09-02T11:00:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "parent": { "id": 9001 },
+    "user": {
+      "display_name": "Ada Lovelace",
+      "nickname": "ada",
+      "account_id": "712020:aaaa-1111",
+      "links": {}
+    },
+    "content": { "type": "rendered", "raw": "Added one.", "markup": "markdown" },
+    "inline": {
+      "path": "crates/git_ui/src/git_panel.rs",
+      "from": null,
+      "to": 239,
+      "start_from": null,
+      "start_to": null
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9003,
+    "created_on": "2026-09-02T11:30:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "parent": { "id": 9001 },
+    "user": {
+      "display_name": "Grace Hopper",
+      "nickname": "grace",
+      "account_id": "712020:bbbb-2222",
+      "links": {}
+    },
+    "content": { "type": "rendered", "raw": "Thanks.", "markup": "markdown" },
+    "inline": {
+      "path": "crates/git_ui/src/git_panel.rs",
+      "from": null,
+      "to": 239,
+      "start_from": null,
+      "start_to": null
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9004,
+    "created_on": "2026-09-03T09:00:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "user": {
+      "display_name": "Alan Turing",
+      "nickname": "alan",
+      "account_id": "712020:cccc-3333",
+      "links": {}
+    },
+    "content": {
+      "type": "rendered",
+      "raw": "This whole block could go.",
+      "markup": "markdown"
+    },
+    "inline": {
+      "path": "packages/sdk/src/help/skills/matching.ts",
+      "from": null,
+      "to": 239,
+      "start_from": null,
+      "start_to": 231
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9005,
+    "created_on": "2026-09-03T09:30:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "user": {
+      "display_name": "Alan Turing",
+      "nickname": "alan",
+      "account_id": "712020:cccc-3333",
+      "links": {}
+    },
+    "content": {
+      "type": "rendered",
+      "raw": "Why was the legacy path removed rather than deprecated?",
+      "markup": "markdown"
+    },
+    "inline": {
+      "path": "crates/git_ui/src/legacy_history.rs",
+      "from": 12,
+      "to": null,
+      "start_from": null,
+      "start_to": null
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9006,
+    "created_on": "2026-09-03T10:00:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "user": {
+      "display_name": "Katherine Johnson",
+      "nickname": "katherine",
+      "account_id": "712020:eeee-5555",
+      "links": {}
+    },
+    "content": {
+      "type": "rendered",
+      "raw": "Overall this reads well. One general note: please add a release note.",
+      "markup": "markdown"
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9007,
+    "created_on": "2026-09-03T10:05:00.000000+00:00",
+    "deleted": true,
+    "pending": false,
+    "user": {
+      "display_name": "Katherine Johnson",
+      "nickname": "katherine",
+      "account_id": "712020:eeee-5555",
+      "links": {}
+    },
+    "content": { "type": "rendered", "raw": "", "markup": "markdown" }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9008,
+    "created_on": "2026-09-03T10:10:00.000000+00:00",
+    "deleted": false,
+    "pending": true,
+    "user": {
+      "display_name": "Ada Lovelace",
+      "nickname": "ada",
+      "account_id": "712020:aaaa-1111",
+      "links": {}
+    },
+    "content": { "type": "rendered", "raw": "Not published yet.", "markup": "markdown" },
+    "inline": {
+      "path": "crates/git_ui/src/git_panel.rs",
+      "from": null,
+      "to": 12,
+      "start_from": null,
+      "start_to": null
+    }
+  },
+  {
+    "type": "pullrequest_comment",
+    "id": 9009,
+    "created_on": "2026-09-03T10:20:00.000000+00:00",
+    "deleted": false,
+    "pending": false,
+    "parent": { "id": 999999 },
+    "user": {
+      "display_name": "Grace Hopper",
+      "nickname": "grace",
+      "account_id": "712020:bbbb-2222",
+      "links": {}
+    },
+    "content": {
+      "type": "rendered",
+      "raw": "A reply whose parent is not in this page must not be dropped.",
+      "markup": "markdown"
+    }
+  }
+]

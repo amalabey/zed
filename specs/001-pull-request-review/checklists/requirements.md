@@ -37,6 +37,24 @@
 > constraint — a fork that keeps pulling upstream — is a constraint on the delivered implementation, not
 > on user-visible behaviour. Read the two subsections below before changing anything in response to them.
 
+### Session 2026-09-06 — scope narrowing after Phase 0 research
+
+Two further clarifications were accepted after `/speckit-plan` surfaced host capability gaps:
+
+- **Comments are single-line.** Multi-line ranges are out of scope, so nothing is collapsed or
+  approximated. Amended FR-040, FR-041, FR-042, FR-048, SC-011, User Story 4, and three edge cases.
+  Reading a range on an existing comment stays in scope (FR-050) — pull requests created elsewhere have
+  them.
+- **Threads without resolution.** Replies are required; resolving threads is out of scope. Amended FR-054
+  and User Story 6 scenario 5.
+
+Both closures *removed* design rather than adding a workaround. The host boundary had needed a
+capability-reporting mechanism so implementations could declare range and resolution support; with both
+out of scope nothing varies between implementations, so the mechanism was deleted and the trait is
+uniform. That mechanism would have been an extension point with one case — which constitution Principle I
+refuses, and which no numbered requirement mandated. Worth remembering the next time a host limitation
+looks like it needs abstracting around: check first whether the requirement is actually wanted.
+
 ### Session 2026-09-06 clarifications
 
 Five clarifications were accepted and integrated; see `## Clarifications` in the spec. All five concern

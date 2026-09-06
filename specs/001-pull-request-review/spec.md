@@ -72,6 +72,13 @@ upstream evolves, which is a worse long-term cost than a one-line addition.
   A: Option A — resolve it through the project's shell environment, so the reviewer's real `PATH` applies
   even when Zed was launched from the dock, plus an environment-variable override read inside the
   feature's own crate. Absent means the distinct "prerequisite missing" condition of FR-064.
+- Q: Should comments support multi-line ranges, given the host tool can only post a single anchor line? →
+  A: Single-line comments only. Multi-line ranges are out of scope, so no range is ever posted, collapsed
+  or approximated. Reading a range an existing comment already carries is a separate matter (below).
+- Q: Should comment threads distinguish resolved from unresolved, given the host tool does not report
+  resolution state? → A: Threads are required — replies must appear in order and a reply must join its
+  thread — but resolving threads is out of scope. Nothing in the feature reads, shows or sets resolution.
+
 - Q: Should the feature reuse the existing commit-diff machinery by widening its visibility, or build its
   own diff item in the new crate? → A: Option B — reuse it. The existing commit-diff view and its
   blob-backed virtual file are made reachable through additive visibility changes and additive entry
@@ -212,29 +219,31 @@ index and uncommitted changes are unchanged throughout.
 
 ### User Story 4 - Comment on the pull request from the diff (Priority: P2)
 
-Reading the diff, the reviewer sees something wrong. They select the lines it is wrong on, invoke the comment
-action, and type. When they submit, the comment is posted to the pull request as an inline comment on that
-file at those lines, and appears where they wrote it. This is the only thing in the feature that sends
-repository content anywhere, and it happens because the reviewer pressed the button on that one comment.
+Reading the diff, the reviewer sees something wrong. They put the cursor on the line it is wrong on, invoke
+the comment action, and type. When they submit, the comment is posted to the pull request as an inline
+comment on that file at that line, and appears where they wrote it. This is the only thing in the feature
+that sends repository content anywhere, and it happens because the reviewer pressed the button on that one
+comment.
 
 **Why this priority**: This is what turns reading into reviewing. It is P2 rather than P1 because Stories 1–3
 already replace the browser for reading, which is most of the reviewer's time.
 
-**Independent Test**: On an open pull request, select three lines in a file's split diff, write a comment,
-submit it, and confirm it appears on the pull request at that file and that line range, attributed to the
+**Independent Test**: On an open pull request, put the cursor on a line in a file's split diff, write a
+comment, submit it, and confirm it appears on the pull request at that file and that line, attributed to the
 reviewer — verified against the pull request itself.
 
 **Acceptance Scenarios**:
 
-1. **Given** the reviewer has lines selected in a pull request's split diff, **When** they invoke the comment
-   action, **Then** an inline editor opens at those lines for them to type in, without stealing focus from
+1. **Given** the reviewer's cursor is on a line in a pull request's split diff, **When** they invoke the comment
+   action, **Then** an inline editor opens at that line for them to type in, without stealing focus from
    their typing or opening a modal.
 2. **Given** the reviewer has typed a comment, **When** they submit it, **Then** the submission is visibly
-   acknowledged within 100ms, and the comment is posted to the pull request at that file and line range.
+   acknowledged within 100ms, and the comment is posted to the pull request at that file and line.
 3. **Given** a comment was posted, **When** the reviewer looks at the diff, **Then** the comment is shown at
-   the lines it was written on, attributed to the reviewer.
-4. **Given** the reviewer wants to comment on one line rather than several, **When** they invoke the action
-   with the cursor on a line and no selection, **Then** the comment applies to that line.
+   the line it was written on, attributed to the reviewer.
+4. **Given** the reviewer has a multi-line selection, **When** they invoke the comment action, **Then** the
+   comment anchors to one line of that selection, the reviewer can see which line before submitting, and no
+   attempt is made to post a range.
 5. **Given** the reviewer has typed a comment, **When** they cancel instead of submitting, **Then** nothing is
    posted and nothing is sent anywhere.
 6. **Given** a comment fails to post — the host is unreachable, the credential was refused, the pull request was
@@ -316,8 +325,8 @@ confirm the reply lands on that thread on the pull request rather than as a new 
 4. **Given** a comment anchored to a line that the pull request has since changed, **When** the reviewer opens
    the file, **Then** the comment is shown as outdated rather than silently re-anchored to an unrelated line or
    dropped.
-5. **Given** a resolved comment thread, **When** the reviewer reads the diff, **Then** it is distinguishable from
-   an unresolved one and does not obscure the code by default.
+5. **Given** a thread the reviewer has read, **When** they collapse it, **Then** it stops obscuring the code, and
+   resolving the thread is not offered at all rather than offered and silently ineffective.
 6. **Given** a file with many comment threads, **When** the reviewer reads it, **Then** the threads do not push
    the code off the screen — they can be collapsed.
 7. **Given** comments cannot be loaded, **When** the reviewer opens a file's diff, **Then** the diff is still
@@ -397,9 +406,13 @@ confirm the reply lands on that thread on the pull request rather than as a new 
   overwrites the other.
 - **The reviewer comments on a line in a file that is not part of the pull request's change**: refused with the
   reason, rather than posted somewhere the host puts it arbitrarily.
-- **The reviewer selects lines spanning both sides of a diff**: either the comment is posted against a single
-  well-defined side and range, or the reviewer is asked to narrow the selection — never posted against a range the
-  host will place differently from what the reviewer saw.
+- **The reviewer's cursor does not identify a single side of the diff**: the comment is refused with the reason
+  rather than posted against whichever side the host happens to pick.
+- **The reviewer selects several lines and comments**: the comment anchors to one line of the selection and the
+  reviewer can see which before submitting. Ranges are out of scope, so none is attempted — the reviewer is never
+  shown a range that the host would store as something else.
+- **An existing comment on the pull request carries a multi-line range**: it is displayed over the lines it
+  covers. Being unable to *post* a range does not mean being unable to *read* one.
 - **The pull request is updated with new commits while the reviewer is composing**: the comment is posted against
   the revision the reviewer was reading, or the reviewer is told the pull request moved — the comment is not
   silently attached to a line it was not written about.
@@ -511,11 +524,15 @@ confirm the reply lands on that thread on the pull request rather than as a new 
 
 #### Commenting
 
-- **FR-040**: The reviewer MUST be able to select one or more lines in a pull request's diff and add a comment on
-  them, through a declared action that is discoverable in the command palette and bindable in the keymap.
-- **FR-041**: Invoking the comment action with no selection MUST comment on the line the cursor is on.
-- **FR-042**: Submitting a comment MUST post it to the pull request as an inline comment at that file and that line
-  range, on the side of the change the reviewer was reading.
+- **FR-040**: The reviewer MUST be able to add a comment on a single line of a pull request's diff, through a
+  declared action that is discoverable in the command palette and bindable in the keymap. Comments anchor to
+  one line; multi-line ranges are out of scope for this phase.
+- **FR-041**: Invoking the comment action MUST comment on the line the cursor is on. When the reviewer has a
+  selection spanning several lines, the comment MUST anchor to one well-defined line of that selection and the
+  reviewer MUST be able to see which line before submitting — never silently anchored to a line they cannot
+  identify.
+- **FR-042**: Submitting a comment MUST post it to the pull request as an inline comment at that file and that
+  line, on the side of the change the reviewer was reading.
 - **FR-043**: Submission MUST be visibly acknowledged within 100ms, and a posted comment MUST then appear at the
   lines it was written on, attributed to the reviewer.
 - **FR-044**: Cancelling a comment MUST send nothing.
@@ -524,8 +541,9 @@ confirm the reply lands on that thread on the pull request rather than as a new 
   MUST be able to retry or cancel.
 - **FR-047**: When the pull request cannot accept comments — it is merged or declined, or the reviewer lacks
   permission — the reviewer MUST be told before composing rather than after submitting.
-- **FR-048**: When a selection spans both sides of the diff, the comment MUST either be posted against a single
-  well-defined side and line range, or be refused with the reviewer asked to narrow the selection.
+- **FR-048**: The comment MUST be posted against exactly one well-defined side of the diff — the side the
+  reviewer's cursor is on. When the cursor position does not identify a single side unambiguously, the comment
+  MUST be refused with the reason, rather than posted against whichever side the host happens to choose.
 - **FR-049**: When the pull request gains new commits while a comment is being composed, the comment MUST be posted
   against the revision the reviewer was reading, or the reviewer MUST be told the pull request moved. It MUST NOT be
   silently attached to a line it was not written about.
@@ -539,8 +557,9 @@ confirm the reply lands on that thread on the pull request rather than as a new 
 - **FR-052**: Comments not anchored to any line MUST be visible in the Overview tab rather than dropped.
 - **FR-053**: A comment anchored to a line that has since changed MUST be shown as outdated rather than
   re-anchored to an unrelated line or dropped.
-- **FR-054**: A resolved thread MUST be distinguishable from an unresolved one, and threads MUST be collapsible so
-  they cannot push the code off the screen.
+- **FR-054**: Threads MUST be collapsible so they cannot push the code off the screen. Resolving threads is
+  out of scope for this phase: the feature MUST NOT offer to resolve or reopen a thread, and MUST NOT display
+  a resolved/unresolved distinction it cannot determine.
 - **FR-055**: When comments cannot be loaded, the diff MUST remain readable, the reason MUST be stated, and adding
   a comment MUST still be possible.
 
@@ -608,7 +627,7 @@ they describe. Each mandates exactly one seam with exactly one implementation in
   an unprompted modal, and MUST leave Zed fully usable.
 - **FR-072**: Requests to the pull request host MUST carry only repository identity and pull request metadata.
   Repository content MUST be transmitted only as one comment the reviewer explicitly submitted, carrying that
-  comment, its file path and its line range — never automatically, never batched, and never on opening the panel,
+  comment, its file path and its line — never automatically, never batched, and never on opening the panel,
   selecting a pull request or opening a diff.
 - **FR-073**: The feature MUST NOT prevent Zed from working when the pull request host is unavailable, unsupported
   for the project, or unauthenticated. Every part of Zed unrelated to this feature MUST behave identically.
@@ -674,8 +693,9 @@ doing so stays cheap for the life of the fork.
 - **Changeset**: The change under review, supplied through the FR-058 boundary — a set of changed file entries and,
   per file, the two sides the diff is between. In this phase its only implementation is the change a pull request
   proposes.
-- **Comment Thread**: One conversation on the pull request — its anchor (file, line range and side, or none), its
-  author, its body, its replies, whether it is resolved, and whether its anchor is outdated.
+- **Comment Thread**: One conversation on the pull request — its anchor (file, line or lines, and side, or none),
+  its author, its body, its replies, and whether its anchor is outdated. Resolution state is not part of this
+  phase. An anchor read from the pull request may span several lines; an anchor the reviewer creates is one line.
 - **Draft Comment**: A comment the reviewer is composing — its anchor, its body, and the revision it was written
   against. Exists only until it is submitted or cancelled; never persisted.
 - **Repository Coordinates**: How the open project's git repository identifies itself to the host — derived from the
@@ -713,9 +733,8 @@ doing so stays cheap for the life of the fork.
 - **SC-010**: Every diff the feature shows is the editor's own diff surface: the reviewer's theme, font, editor
   settings and keymap apply, syntax highlighting is present, and the unified/split toggle works — verified against a
   diff opened by Zed's existing git surfaces.
-- **SC-011**: A comment written on a selected line range appears on the pull request at that file and range,
-  attributed to the reviewer — verified against the pull request itself, for a single line, a multi-line range, the
-  added side and the removed side.
+- **SC-011**: A comment written on a line appears on the pull request at that file and that line, attributed to
+  the reviewer — verified against the pull request itself, for the added side and the removed side.
 - **SC-012**: No comment is ever posted that the reviewer did not submit, and no submitted comment is ever silently
   lost: verified by cancelling, by inducing a post failure and retrying, and by quitting with a comment open.
 - **SC-013**: Adding a second implementation of the FR-056 host boundary requires no change to the panel, the list,
@@ -792,8 +811,15 @@ doing so stays cheap for the life of the fork.
   across a workspace, and not several repositories at once.
 - **Comments post immediately**: submitting a comment posts it. There is no local draft store and no batched review
   submission in this phase; an unsubmitted comment exists only in the open inline editor.
-- **Out of scope for this phase**: approving, declining, merging, creating or editing pull requests; editing,
-  deleting or resolving comments after posting; pull request tasks; CI and pipeline status; branch comparison, commit
+- **Comments are single-line** (decided): a comment the reviewer creates anchors to one line. Multi-line ranges
+  are out of scope, so the feature never posts, collapses or approximates one. A range on an *existing* comment
+  is still displayed over the lines it covers — reading a range and creating one are separate capabilities.
+- **Threads without resolution** (decided): replies are required — a reply joins its thread and threads render in
+  order — but resolving threads is out of scope. The feature neither shows nor sets resolution state, so it
+  cannot show one that is stale or wrong.
+- **Out of scope for this phase**: approving, declining, merging, creating or editing pull requests; editing or
+  deleting comments after posting; resolving or reopening comment threads; multi-line comment anchors; pull
+  request tasks; CI and pipeline status; branch comparison, commit
   ranges and working-tree review as changeset kinds; GitHub and any host other than the one above; AI review;
   reviewing pull requests across several repositories at once; pull requests whose source branch lives on a fork,
   unless that falls out for free; and user settings and default keybindings, per FR-066.

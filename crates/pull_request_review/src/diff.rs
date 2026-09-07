@@ -437,6 +437,7 @@ pub fn open_file(
                         None,
                         // Scopes the view to the one file the reviewer opened.
                         Some(path.clone()),
+                        true,
                         window,
                         cx,
                     )

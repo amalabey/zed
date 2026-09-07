@@ -250,6 +250,7 @@ impl CommitView {
                                 workspace_handle,
                                 stash,
                                 file_filter,
+                                false,
                                 window,
                                 cx,
                             )
@@ -302,6 +303,7 @@ impl CommitView {
         workspace: WeakEntity<Workspace>,
         stash: Option<usize>,
         file_filter: Option<RepoPath>,
+        show_all_context: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -436,7 +438,7 @@ impl CommitView {
                         FILE_NAMESPACE_SORT_PREFIX,
                         snapshot.file().unwrap().path().clone(),
                     );
-                    let ranges = if is_binary {
+                    let ranges = if is_binary || show_all_context {
                         vec![language::Point::zero()..snapshot.max_point()]
                     } else {
                         let diff_snapshot = buffer_diff.read(cx).snapshot(cx);
@@ -1580,6 +1582,15 @@ mod tests {
         files: Vec<CommitFile>,
         is_shallow_boundary: bool,
     ) -> (Entity<CommitView>, VisualTestContext) {
+        open_synthesised_commit_with_context(cx, files, is_shallow_boundary, false).await
+    }
+
+    async fn open_synthesised_commit_with_context(
+        cx: &mut TestAppContext,
+        files: Vec<CommitFile>,
+        is_shallow_boundary: bool,
+        show_all_context: bool,
+    ) -> (Entity<CommitView>, VisualTestContext) {
         init_test(cx);
 
         let fs = fs::FakeFs::new(cx.executor());
@@ -1618,7 +1629,7 @@ mod tests {
             is_shallow_boundary,
         };
 
-        let view = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let view = workspace.update_in(&mut cx, |_workspace, window, cx| {
             let workspace_entity = cx.entity();
             let workspace_handle = cx.weak_entity();
             cx.new(|cx| {
@@ -1631,6 +1642,7 @@ mod tests {
                     workspace_handle,
                     None,
                     None,
+                    show_all_context,
                     window,
                     cx,
                 )
@@ -1686,6 +1698,40 @@ mod tests {
 
         let text = multibuffer_text(&view, &mut cx);
         assert!(text.contains("fn after() {}"), "the new side is the buffer");
+    }
+
+    #[gpui::test]
+    async fn commit_view_can_show_every_line_of_a_modified_file(cx: &mut TestAppContext) {
+        let old_text = (0..30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        let mut new_lines = (0..30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<Vec<_>>();
+        new_lines[2] = "changed near start\n".to_string();
+        new_lines[27] = "changed near end\n".to_string();
+        let new_text = new_lines.concat();
+
+        let (view, mut cx) = open_synthesised_commit_with_context(
+            cx,
+            vec![commit_file(
+                "modified.rs",
+                Some(&old_text),
+                Some(&new_text),
+                false,
+            )],
+            false,
+            true,
+        )
+        .await;
+
+        let text = multibuffer_text(&view, &mut cx);
+        assert!(text.contains("changed near start"));
+        assert!(
+            text.contains("line 14"),
+            "middle unchanged context must be visible"
+        );
+        assert!(text.contains("changed near end"));
     }
 
     #[gpui::test]

@@ -14290,6 +14290,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "askpass",
+ "base64 0.22.1",
  "buffer_diff",
  "chrono",
  "collections",
@@ -14300,6 +14301,7 @@ dependencies = [
  "git",
  "git_ui",
  "gpui",
+ "http_client",
  "language",
  "language_model",
  "libc",
@@ -14318,6 +14320,7 @@ dependencies = [
  "time_format",
  "ui",
  "url",
+ "urlencoding",
  "util",
  "which",
  "workspace",

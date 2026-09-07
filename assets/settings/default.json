@@ -1057,6 +1057,16 @@
     // Default width of the collaboration panel.
     "default_width": 240,
   },
+  "pull_request_review": {
+    "bitbucket": {
+      // OAuth access token used as a Bearer token. Takes precedence over username/app password.
+      "access_token": null,
+      // Bitbucket username or Atlassian email for app-password authentication.
+      "username": null,
+      // Bitbucket app password used with `username`.
+      "app_password": null
+    }
+  },
   "git_panel": {
     // Whether to show the git panel button in the status bar.
     "button": true,

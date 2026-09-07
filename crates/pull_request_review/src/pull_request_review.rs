@@ -20,13 +20,16 @@ pub mod comments;
 pub mod diff;
 pub mod files;
 pub mod host;
+pub mod host_bitbucket;
 pub mod host_process;
 pub mod host_twg;
 pub mod list;
 pub mod overview;
 pub mod panel;
+pub mod settings;
 pub mod state;
 
+use ::settings::Settings as _;
 use gpui::{App, actions};
 use workspace::Workspace;
 
@@ -63,6 +66,9 @@ actions!(
 /// what Principle III asks for, and shipping a binding would claim a key the reviewer did not
 /// choose to give up.
 pub fn init(cx: &mut App) {
+    if cx.has_global::<::settings::SettingsStore>() {
+        settings::PullRequestReviewSettings::register(cx);
+    }
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         panel::register(workspace);
     })
@@ -76,11 +82,11 @@ pub fn init(cx: &mut App) {
 /// asks for "the host" and gets one — which is precisely what makes adding GitHub (FR-056) a matter
 /// of changing this function and nothing above it.
 pub(crate) fn default_host(
-    working_directory: std::sync::Arc<std::path::Path>,
-    environment: gpui::WeakEntity<project::ProjectEnvironment>,
+    _working_directory: std::sync::Arc<std::path::Path>,
+    _environment: gpui::WeakEntity<project::ProjectEnvironment>,
     cx: &mut App,
 ) -> std::rc::Rc<dyn host::PullRequestHost> {
-    std::rc::Rc::new(host_twg::TwgHost::new(working_directory, environment, cx))
+    std::rc::Rc::new(host_bitbucket::BitbucketApiHost::new(cx))
 }
 
 /// Whether the host this feature talks to can review a repository on the given remote host.
@@ -89,11 +95,11 @@ pub(crate) fn default_host(
 /// supported is the implementation's business, and naming one above the boundary would break
 /// FR-057.
 pub(crate) fn supports_remote_host(host: &str) -> bool {
-    host_twg::supports_remote_host(host)
+    host_bitbucket::supports_remote_host(host)
 }
 
 /// The default number of pull requests one list call asks for.
-pub(crate) const DEFAULT_LIST_LIMIT: usize = host_twg::DEFAULT_LIST_LIMIT;
+pub(crate) const DEFAULT_LIST_LIMIT: usize = host_bitbucket::DEFAULT_LIST_LIMIT;
 
 /// The part of a source file that ships, with its trailing test module removed.
 ///
@@ -182,8 +188,13 @@ mod tests {
     fn no_platform_vocabulary_appears_above_the_boundary() {
         // The two files permitted to know how the host is reached, plus this one: the crate root
         // declares those modules by name and states the forbidden words in order to forbid them.
-        const BELOW_THE_SEAM: [&str; 3] =
-            ["host_twg.rs", "host_process.rs", "pull_request_review.rs"];
+        const BELOW_THE_SEAM: [&str; 5] = [
+            "host_bitbucket.rs",
+            "host_twg.rs",
+            "host_process.rs",
+            "settings.rs",
+            "pull_request_review.rs",
+        ];
         // Lowercased needles. `git` is absent on purpose: the changeset boundary is defined in
         // terms of revisions and blobs, and git is this feature's own storage rather than the host
         // it talks to.

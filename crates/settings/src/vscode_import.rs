@@ -215,6 +215,7 @@ impl VsCodeSettings {
             preview_tabs: self.preview_tabs_settings_content(),
             project: self.project_settings_content(),
             project_panel: self.project_panel_settings_content(),
+            pull_request_review: None,
             proxy: self.read_string("http.proxy"),
             reduce_motion: self.read_enum("workbench.reduceMotion", |s| match s {
                 "on" => Some(ReduceMotionMode::On),

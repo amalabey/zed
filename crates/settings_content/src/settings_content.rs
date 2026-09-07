@@ -271,6 +271,9 @@ pub struct SettingsContent {
 
     pub project_panel: Option<ProjectPanelSettingsContent>,
 
+    /// Settings for pull request review.
+    pub pull_request_review: Option<PullRequestReviewSettingsContent>,
+
     /// Configuration for Node-related features
     pub node: Option<NodeBinarySettings>,
 
@@ -403,7 +406,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, language_models, outline_panel, project_panel,
+        journal, log, line_indicator_format, language_models, outline_panel, project_panel, pull_request_review,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
         instrumentation,
@@ -905,6 +908,26 @@ pub enum StatusStyle {
 )]
 pub struct ScrollbarSettings {
     pub show: Option<ShowScrollbar>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct PullRequestReviewSettingsContent {
+    /// Bitbucket Cloud credentials used by the pull request review panel.
+    pub bitbucket: Option<BitbucketPullRequestSettingsContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct BitbucketPullRequestSettingsContent {
+    /// OAuth access token used as a Bearer token. Takes precedence over username/app password.
+    pub access_token: Option<String>,
+
+    /// Bitbucket username or Atlassian email for app-password authentication.
+    pub username: Option<String>,
+
+    /// Bitbucket app password used with `username`.
+    pub app_password: Option<String>,
 }
 
 #[with_fallible_options]

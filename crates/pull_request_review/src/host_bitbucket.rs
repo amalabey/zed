@@ -25,6 +25,10 @@ use crate::settings::PullRequestReviewSettings;
 const DIFFSTAT_LIMIT: usize = 2000;
 const COMMENT_LIMIT: usize = 1000;
 pub const DEFAULT_LIST_LIMIT: usize = 100;
+// Bitbucket Cloud's pull request, diffstat and comment list endpoints reject `pagelen` above 50
+// with a 400 rather than clamping it, unlike most other Bitbucket Cloud endpoints which cap at
+// 100. `get_paginated_json` still walks the `next` link to satisfy limits above this per-page cap.
+const MAX_PAGELEN: usize = 50;
 const ALL_STATES: [&str; 4] = ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"];
 const BITBUCKET_API_BASE_URL: &str = "https://api.bitbucket.org/2.0";
 pub fn supports_remote_host(host: &str) -> bool {
@@ -80,7 +84,7 @@ impl PullRequestHost for BitbucketApiHost {
                 if let Some(author) = author_filter_nickname(query.author.as_ref()) {
                     pairs.append_pair("q", &format!(r#"author.nickname="{author}""#));
                 }
-                pairs.append_pair("pagelen", &query.limit.max(1).min(100).to_string());
+                pairs.append_pair("pagelen", &query.limit.max(1).min(MAX_PAGELEN).to_string());
                 pairs.append_pair("sort", sort_query(query.sort));
             }
             let payload =
@@ -121,7 +125,7 @@ impl PullRequestHost for BitbucketApiHost {
                 id.number
             ))?;
             url.query_pairs_mut()
-                .append_pair("pagelen", &DIFFSTAT_LIMIT.min(100).to_string());
+                .append_pair("pagelen", &DIFFSTAT_LIMIT.min(MAX_PAGELEN).to_string());
             let payload = get_paginated_json(client, credentials, url, DIFFSTAT_LIMIT, cx).await?;
             parse_diffstat(&payload)
         })
@@ -143,7 +147,7 @@ impl PullRequestHost for BitbucketApiHost {
                 id.number
             ))?;
             url.query_pairs_mut()
-                .append_pair("pagelen", &COMMENT_LIMIT.min(100).to_string());
+                .append_pair("pagelen", &COMMENT_LIMIT.min(MAX_PAGELEN).to_string());
             let payload = get_paginated_json(client, credentials, url, COMMENT_LIMIT, cx).await?;
             parse_comments(&payload)
         })
